@@ -1,0 +1,294 @@
+package ui
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/bubbles/table"
+
+	"github.com/Tomsk73/chaintui/internal/api"
+)
+
+func relativeTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 30*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return t.Format("2006-01-02")
+	}
+}
+
+func shortUID(uid string) string {
+	parts := strings.Split(uid, "/")
+	return parts[len(parts)-1]
+}
+
+// --- Groups ---
+
+func NewGroupsPage(client *api.Client, parentUID string) *ListPage {
+	cols := []table.Column{
+		{Title: "NAME", Width: 30},
+		{Title: "UID", Width: 20},
+		{Title: "DESCRIPTION", Width: 30},
+		{Title: "CREATED", Width: 14},
+	}
+	load := func() ([]RowData, error) {
+		groups, err := client.ListGroups(parentUID)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]RowData, len(groups))
+		for i, g := range groups {
+			rows[i] = RowData{
+				UID:     g.UID,
+				Columns: []string{g.Name, shortUID(g.UID), g.Description, relativeTime(g.CreateTime)},
+				Raw:     g,
+			}
+		}
+		return rows, nil
+	}
+	enter := func(row RowData) Page {
+		return NewGroupsPage(client, row.UID)
+	}
+	return newListPage("groups", parentUID, cols, load, enter)
+}
+
+// --- Identities ---
+
+func NewIdentitiesPage(client *api.Client, groupUID string) *ListPage {
+	cols := []table.Column{
+		{Title: "NAME", Width: 30},
+		{Title: "UID", Width: 20},
+		{Title: "DESCRIPTION", Width: 30},
+		{Title: "CREATED", Width: 14},
+	}
+	load := func() ([]RowData, error) {
+		items, err := client.ListIdentities(groupUID)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]RowData, len(items))
+		for i, v := range items {
+			rows[i] = RowData{
+				UID:     v.UID,
+				Columns: []string{v.Name, shortUID(v.UID), v.Description, relativeTime(v.CreateTime)},
+				Raw:     v,
+			}
+		}
+		return rows, nil
+	}
+	return newListPage("identities", groupUID, cols, load, nil)
+}
+
+// --- Roles ---
+
+func NewRolesPage(client *api.Client, groupUID string) *ListPage {
+	cols := []table.Column{
+		{Title: "NAME", Width: 30},
+		{Title: "CAPABILITIES", Width: 40},
+		{Title: "CREATED", Width: 14},
+	}
+	load := func() ([]RowData, error) {
+		items, err := client.ListRoles(groupUID)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]RowData, len(items))
+		for i, v := range items {
+			caps := strings.Join(v.Capabilities, ", ")
+			if len(caps) > 38 {
+				caps = caps[:35] + "..."
+			}
+			rows[i] = RowData{
+				UID:     v.UID,
+				Columns: []string{v.Name, caps, relativeTime(v.CreateTime)},
+				Raw:     v,
+			}
+		}
+		return rows, nil
+	}
+	return newListPage("roles", groupUID, cols, load, nil)
+}
+
+// --- RoleBindings ---
+
+func NewRoleBindingsPage(client *api.Client, groupUID string) *ListPage {
+	cols := []table.Column{
+		{Title: "UID", Width: 20},
+		{Title: "IDENTITY", Width: 30},
+		{Title: "ROLE", Width: 30},
+		{Title: "CREATED", Width: 14},
+	}
+	load := func() ([]RowData, error) {
+		items, err := client.ListRoleBindings(groupUID)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]RowData, len(items))
+		for i, v := range items {
+			rows[i] = RowData{
+				UID:     v.UID,
+				Columns: []string{shortUID(v.UID), shortUID(v.Identity), shortUID(v.Role), relativeTime(v.CreateTime)},
+				Raw:     v,
+			}
+		}
+		return rows, nil
+	}
+	return newListPage("rolebindings", groupUID, cols, load, nil)
+}
+
+// --- IdentityProviders ---
+
+func NewIDPsPage(client *api.Client, groupUID string) *ListPage {
+	cols := []table.Column{
+		{Title: "NAME", Width: 30},
+		{Title: "UID", Width: 20},
+		{Title: "DESCRIPTION", Width: 30},
+		{Title: "CREATED", Width: 14},
+	}
+	load := func() ([]RowData, error) {
+		items, err := client.ListIdentityProviders(groupUID)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]RowData, len(items))
+		for i, v := range items {
+			rows[i] = RowData{
+				UID:     v.UID,
+				Columns: []string{v.Name, shortUID(v.UID), v.Description, relativeTime(v.CreateTime)},
+				Raw:     v,
+			}
+		}
+		return rows, nil
+	}
+	return newListPage("identityproviders", groupUID, cols, load, nil)
+}
+
+// --- GroupInvites ---
+
+func NewGroupInvitesPage(client *api.Client, groupUID string) *ListPage {
+	cols := []table.Column{
+		{Title: "EMAIL", Width: 35},
+		{Title: "ROLE", Width: 20},
+		{Title: "EXPIRES", Width: 14},
+		{Title: "CREATED", Width: 14},
+	}
+	load := func() ([]RowData, error) {
+		items, err := client.ListGroupInvites(groupUID)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]RowData, len(items))
+		for i, v := range items {
+			rows[i] = RowData{
+				UID:     v.UID,
+				Columns: []string{v.Email, shortUID(v.Role), relativeTime(v.ExpiresAt), relativeTime(v.CreateTime)},
+				Raw:     v,
+			}
+		}
+		return rows, nil
+	}
+	return newListPage("groupinvites", groupUID, cols, load, nil)
+}
+
+// --- Repos ---
+
+func NewReposPage(client *api.Client, groupUID string) *ListPage {
+	cols := []table.Column{
+		{Title: "NAME", Width: 35},
+		{Title: "REGISTRY", Width: 30},
+		{Title: "CREATED", Width: 14},
+	}
+	load := func() ([]RowData, error) {
+		items, err := client.ListRepos(groupUID)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]RowData, len(items))
+		for i, v := range items {
+			rows[i] = RowData{
+				UID:     v.UID,
+				Columns: []string{v.Name, v.Registry, relativeTime(v.CreateTime)},
+				Raw:     v,
+			}
+		}
+		return rows, nil
+	}
+	enter := func(row RowData) Page {
+		return NewTagsPage(client, row.UID)
+	}
+	return newListPage("repos", groupUID, cols, load, enter)
+}
+
+// --- Tags ---
+
+func NewTagsPage(client *api.Client, repoUID string) *ListPage {
+	cols := []table.Column{
+		{Title: "NAME", Width: 30},
+		{Title: "DIGEST", Width: 40},
+		{Title: "CREATED", Width: 14},
+	}
+	load := func() ([]RowData, error) {
+		items, err := client.ListTags(repoUID)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]RowData, len(items))
+		for i, v := range items {
+			digest := v.Digest
+			if len(digest) > 19 {
+				digest = digest[:7] + "..." + digest[len(digest)-9:]
+			}
+			rows[i] = RowData{
+				UID:     v.UID,
+				Columns: []string{v.Name, digest, relativeTime(v.CreateTime)},
+				Raw:     v,
+			}
+		}
+		return rows, nil
+	}
+	return newListPage("tags", repoUID, cols, load, nil)
+}
+
+// --- Advisories ---
+
+func NewAdvisoriesPage(client *api.Client, groupUID string) *ListPage {
+	cols := []table.Column{
+		{Title: "NAME", Width: 20},
+		{Title: "ALIASES", Width: 30},
+		{Title: "DESCRIPTION", Width: 40},
+		{Title: "CREATED", Width: 14},
+	}
+	load := func() ([]RowData, error) {
+		items, err := client.ListAdvisories(groupUID)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]RowData, len(items))
+		for i, v := range items {
+			aliases := strings.Join(v.Aliases, ", ")
+			desc := v.Description
+			if len(desc) > 38 {
+				desc = desc[:35] + "..."
+			}
+			rows[i] = RowData{
+				UID:     v.UID,
+				Columns: []string{v.Name, aliases, desc, relativeTime(v.CreateTime)},
+				Raw:     v,
+			}
+		}
+		return rows, nil
+	}
+	return newListPage("advisories", groupUID, cols, load, nil)
+}
