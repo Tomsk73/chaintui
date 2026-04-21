@@ -45,14 +45,14 @@ type ListPage struct {
 	height int
 
 	loadFn  func() ([]RowData, error) // fetches rows from API
-	enterFn func(RowData) Page         // builds next page on Enter (nil = no drill-down)
+	enterFn func(RowData) tea.Cmd     // emits a Cmd on Enter (nil = no action)
 }
 
 func newListPage(
 	resource, groupCtx string,
 	cols []table.Column,
 	loadFn func() ([]RowData, error),
-	enterFn func(RowData) Page,
+	enterFn func(RowData) tea.Cmd,
 ) *ListPage {
 	fi := textinput.New()
 	fi.Placeholder = "filter..."
@@ -165,10 +165,7 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if p.enterFn != nil {
 				if row, ok := p.selectedRow(); ok {
-					next := p.enterFn(row)
-					if next != nil {
-						return p, func() tea.Msg { return PushMsg{P: next} }
-					}
+					return p, p.enterFn(row)
 				}
 			}
 		}

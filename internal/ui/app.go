@@ -25,7 +25,7 @@ type Page interface {
 
 // Navigation messages understood by the App.
 type (
-	PushMsg struct{ P Page }
+	PushMsg   struct{ P Page }
 	PopMsg    struct{}
 	SwitchMsg struct{ Resource, GroupCtx string }
 	errMsg    struct{ err error }
@@ -39,6 +39,8 @@ type App struct {
 	height  int
 	cmdMode bool
 	cmd     textinput.Model
+	orgCtx  string // active organisation UIDP
+	orgName string // display name for the active organisation
 }
 
 func New(client *api.Client) App {
@@ -76,6 +78,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.stack[i].SetSize(a.width, a.contentH())
 		}
 		return a, nil
+
+	case SelectOrgMsg:
+		a.orgCtx = msg.UID
+		a.orgName = msg.Name
+		page := NewGroupsPage(a.client, msg.UID)
+		page.SetSize(a.width, a.contentH())
+		a.stack = []Page{page}
+		return a, page.Init()
 
 	case PushMsg:
 		msg.P.SetSize(a.width, a.contentH())
@@ -120,6 +130,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.cmd.SetValue("")
 			a.cmd.Focus()
 			return a, textinput.Blink
+		case "o":
+			page := NewOrgSelectorPage(a.client)
+			page.SetSize(a.width, a.contentH())
+			a.stack = append(append([]Page{}, a.stack...), page)
+			return a, page.Init()
 		}
 	}
 
@@ -145,6 +160,9 @@ func (a App) handleCmdKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		ctx := a.top().GroupContext()
+		if ctx == "" {
+			ctx = a.orgCtx
+		}
 		return a, func() tea.Msg { return SwitchMsg{Resource: val, GroupCtx: ctx} }
 	}
 	var cmd tea.Cmd
@@ -157,7 +175,7 @@ func (a App) View() string {
 		return "Initializing..."
 	}
 	top := a.top()
-	header := renderHeader(a.width, top.ResourceType(), top.GroupContext(), a.breadcrumb())
+	header := renderHeader(a.width, top.ResourceType(), top.GroupContext(), a.orgName, a.breadcrumb())
 	content := lipgloss.NewStyle().Height(a.contentH()).Render(top.View())
 	var footer string
 	if a.cmdMode {
@@ -205,17 +223,23 @@ func resolveResourcePage(client *api.Client, resource, groupCtx string) Page {
 	return nil
 }
 
-func renderHeader(width int, resource, groupCtx, breadcrumb string) string {
+func renderHeader(width int, resource, groupCtx, orgName, breadcrumb string) string {
 	ctx := groupCtx
 	if ctx == "" {
 		ctx = "root"
 	}
+	org := orgName
+	if org == "" {
+		org = "no org"
+	}
 	left := lipgloss.JoinHorizontal(lipgloss.Left,
 		appNameStyle.Render("chaintui"),
 		sepStyle.Render("  │  "),
+		ctxStyle.Render(org),
+		sepStyle.Render("  │  "),
 		resTypeStyle.Render(resource),
 		sepStyle.Render("  │  "),
-		ctxStyle.Render(ctx),
+		dimStyle.Render(ctx),
 	)
 	right := dimStyle.Render(breadcrumb)
 
@@ -233,6 +257,7 @@ func renderHeader(width int, resource, groupCtx, breadcrumb string) string {
 
 func renderFooter(width int, resource string, canGoBack bool) string {
 	hints := []string{
+		keyHint("o", "select org"),
 		keyHint(":", "cmd"),
 		keyHint("/", "filter"),
 		keyHint("d", "describe"),

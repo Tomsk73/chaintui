@@ -18,6 +18,25 @@ func scopeParams(groupUID string) url.Values {
 	return p
 }
 
+// ListMyOrganizations returns the root-level groups (orgs) the current user
+// belongs to, using uidp.ancestorsOf scoped to the user's own subject UIDP.
+// Falls back to all root groups when the subject is unavailable.
+func (c *Client) ListMyOrganizations() ([]Group, error) {
+	p := url.Values{"pageSize": {maxPage}}
+	if sub := c.Subject(); sub != "" {
+		p.Set("uidp.ancestorsOf", sub)
+	} else {
+		p.Set("uidp.inRoot", "true")
+	}
+	var resp struct {
+		Items []Group `json:"items"`
+	}
+	if err := c.get("/iam/v2beta1/groups", p, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Items, nil
+}
+
 func (c *Client) ListGroups(parentUID string) ([]Group, error) {
 	var resp struct {
 		Items []Group `json:"items"`

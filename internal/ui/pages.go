@@ -6,9 +6,16 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Tomsk73/chaintui/internal/api"
 )
+
+// SelectOrgMsg is emitted when the user picks an organisation in the org selector.
+type SelectOrgMsg struct {
+	UID  string
+	Name string
+}
 
 func relativeTime(t time.Time) string {
 	if t.IsZero() {
@@ -32,6 +39,42 @@ func relativeTime(t time.Time) string {
 func shortUID(uid string) string {
 	parts := strings.Split(uid, "/")
 	return parts[len(parts)-1]
+}
+
+func pushPage(p Page) tea.Cmd {
+	return func() tea.Msg { return PushMsg{P: p} }
+}
+
+// --- Org selector ---
+
+// NewOrgSelectorPage lists the organisations the current user belongs to.
+// Selecting one emits SelectOrgMsg so the App can set the active org context.
+func NewOrgSelectorPage(client *api.Client) *ListPage {
+	cols := []table.Column{
+		{Title: "NAME", Width: 35},
+		{Title: "UID", Width: 25},
+		{Title: "DESCRIPTION", Width: 30},
+		{Title: "CREATED", Width: 14},
+	}
+	load := func() ([]RowData, error) {
+		orgs, err := client.ListMyOrganizations()
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]RowData, len(orgs))
+		for i, g := range orgs {
+			rows[i] = RowData{
+				UID:     g.UID,
+				Columns: []string{g.Name, shortUID(g.UID), g.Description, relativeTime(g.CreateTime)},
+				Raw:     g,
+			}
+		}
+		return rows, nil
+	}
+	enter := func(row RowData) tea.Cmd {
+		return func() tea.Msg { return SelectOrgMsg{UID: row.UID, Name: row.Columns[0]} }
+	}
+	return newListPage("organizations", "", cols, load, enter)
 }
 
 // --- Groups ---
@@ -58,8 +101,8 @@ func NewGroupsPage(client *api.Client, parentUID string) *ListPage {
 		}
 		return rows, nil
 	}
-	enter := func(row RowData) Page {
-		return NewGroupsPage(client, row.UID)
+	enter := func(row RowData) tea.Cmd {
+		return pushPage(NewGroupsPage(client, row.UID))
 	}
 	return newListPage("groups", parentUID, cols, load, enter)
 }
@@ -225,8 +268,8 @@ func NewReposPage(client *api.Client, groupUID string) *ListPage {
 		}
 		return rows, nil
 	}
-	enter := func(row RowData) Page {
-		return NewTagsPage(client, row.UID)
+	enter := func(row RowData) tea.Cmd {
+		return pushPage(NewTagsPage(client, row.UID))
 	}
 	return newListPage("repos", groupUID, cols, load, enter)
 }

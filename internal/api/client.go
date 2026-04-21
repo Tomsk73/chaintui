@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,9 +17,46 @@ import (
 const apiBase = "https://console-api.enforce.dev"
 
 type Client struct {
-	http  *http.Client
-	mu    sync.Mutex
-	token string
+	http    *http.Client
+	mu      sync.Mutex
+	token   string
+	subject string // UIDP from JWT sub claim
+	email   string // email from JWT (may be empty)
+}
+
+// Subject returns the authenticated identity's UIDP (from the JWT sub claim).
+func (c *Client) Subject() string { return c.subject }
+
+// Email returns the authenticated user's email if present in the token.
+func (c *Client) Email() string { return c.email }
+
+// parseToken extracts subject and email from a JWT without validating its signature.
+func parseToken(token string) (subject, email string) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return
+	}
+	var claims struct {
+		Sub   string `json:"sub"`
+		Email string `json:"email"`
+		Act   *struct {
+			Sub string `json:"sub"`
+		} `json:"act"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return
+	}
+	subject = claims.Sub
+	email = claims.Email
+	// act.sub is the human actor when the token was obtained via impersonation/delegation.
+	if claims.Act != nil && claims.Act.Sub != "" {
+		subject = claims.Act.Sub
+	}
+	return
 }
 
 // NewClient resolves a token from the environment or chainctl's token cache.
@@ -50,9 +88,12 @@ func Login() (*Client, error) {
 }
 
 func newClient(token string) *Client {
+	sub, email := parseToken(token)
 	return &Client{
-		http:  &http.Client{Timeout: 30 * time.Second},
-		token: token,
+		http:    &http.Client{Timeout: 30 * time.Second},
+		token:   token,
+		subject: sub,
+		email:   email,
 	}
 }
 
