@@ -1,27 +1,23 @@
 package api
 
 import (
-	"encoding/base64"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"strings"
-	"sync"
-	"time"
+
+	cgauth "chainguard.dev/sdk/auth"
+	"chainguard.dev/sdk/proto/platform"
 )
 
 const apiBase = "https://console-api.enforce.dev"
 
 type Client struct {
-	http    *http.Client
-	mu      sync.Mutex
-	token   string
-	subject string // UIDP from JWT sub claim
-	email   string // email from JWT (may be empty)
+	platform platform.Clients
+	token    string
+	subject  string
+	email    string
 }
 
 // Subject returns the authenticated identity's UIDP (from the JWT sub claim).
@@ -30,35 +26,6 @@ func (c *Client) Subject() string { return c.subject }
 // Email returns the authenticated user's email if present in the token.
 func (c *Client) Email() string { return c.email }
 
-// parseToken extracts subject and email from a JWT without validating its signature.
-func parseToken(token string) (subject, email string) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return
-	}
-	var claims struct {
-		Sub   string `json:"sub"`
-		Email string `json:"email"`
-		Act   *struct {
-			Sub string `json:"sub"`
-		} `json:"act"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return
-	}
-	subject = claims.Sub
-	email = claims.Email
-	// act.sub is the human actor when the token was obtained via impersonation/delegation.
-	if claims.Act != nil && claims.Act.Sub != "" {
-		subject = claims.Act.Sub
-	}
-	return
-}
-
 // NewClient resolves a token from the environment or chainctl's token cache.
 // Returns an error (with ErrNotLoggedIn) if no cached token exists.
 func NewClient() (*Client, error) {
@@ -66,7 +33,7 @@ func NewClient() (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newClient(token), nil
+	return newClient(token)
 }
 
 // Login runs chainctl auth login interactively (inheriting the terminal),
@@ -84,17 +51,23 @@ func Login() (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetch token after login: %w", err)
 	}
-	return newClient(token), nil
+	return newClient(token)
 }
 
-func newClient(token string) *Client {
+func newClient(token string) (*Client, error) {
+	ctx := context.Background()
+	cred := cgauth.NewFromToken(ctx, token, false)
+	p, err := platform.NewPlatformClients(ctx, apiBase, cred)
+	if err != nil {
+		return nil, fmt.Errorf("create platform clients: %w", err)
+	}
 	sub, email := parseToken(token)
 	return &Client{
-		http:    &http.Client{Timeout: 30 * time.Second},
-		token:   token,
-		subject: sub,
-		email:   email,
-	}
+		platform: p,
+		token:    token,
+		subject:  sub,
+		email:    email,
+	}, nil
 }
 
 // cachedToken returns a token from the environment or chainctl's cache.
@@ -113,63 +86,23 @@ func cachedToken() (string, error) {
 	return t, nil
 }
 
+// parseToken extracts subject and email from a JWT without validating its signature.
+// Handles act.sub (impersonation) by preferring the actor subject when present.
+func parseToken(token string) (subject, email string) {
+	_, sub, err := cgauth.ExtractIssuerAndSubject(token)
+	if err == nil {
+		subject = sub
+	}
+	em, _, err := cgauth.ExtractEmail(token)
+	if err == nil {
+		email = em
+	}
+	// act.sub is the human actor when the token was obtained via impersonation/delegation.
+	if actor, err := cgauth.ExtractActor(token); err == nil && actor.Subject != "" {
+		subject = actor.Subject
+	}
+	return
+}
+
 // ErrNotLoggedIn is returned when no valid token can be found.
 var ErrNotLoggedIn = fmt.Errorf("not logged in (run chainctl auth login, or set CHAINGUARD_TOKEN)")
-
-func (c *Client) get(path string, params url.Values, out any) error {
-	return c.doGet(path, params, out, true)
-}
-
-func (c *Client) doGet(path string, params url.Values, out any, allowRefresh bool) error {
-	u, err := url.Parse(apiBase + path)
-	if err != nil {
-		return err
-	}
-	if len(params) > 0 {
-		u.RawQuery = params.Encode()
-	}
-
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
-	if err != nil {
-		return err
-	}
-
-	c.mu.Lock()
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	c.mu.Unlock()
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	if resp.StatusCode == http.StatusUnauthorized && allowRefresh {
-		// Token may have expired — try refreshing once from the cache.
-		if newToken, err := cachedToken(); err == nil {
-			c.mu.Lock()
-			c.token = newToken
-			c.mu.Unlock()
-			return c.doGet(path, params, out, false)
-		}
-		return ErrNotLoggedIn
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		var errResp struct {
-			Message string `json:"message"`
-		}
-		if json.Unmarshal(body, &errResp) == nil && errResp.Message != "" {
-			return fmt.Errorf("API %d: %s", resp.StatusCode, errResp.Message)
-		}
-		return fmt.Errorf("API %d", resp.StatusCode)
-	}
-
-	return json.Unmarshal(body, out)
-}
