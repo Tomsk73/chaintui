@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	advisoryv1 "chainguard.dev/sdk/proto/platform/advisory/v1"
@@ -98,11 +99,14 @@ func (c *Client) ListRoleBindings(groupUID string) ([]RoleBinding, error) {
 	}
 	out := make([]RoleBinding, len(resp.Items))
 	for i, v := range resp.Items {
-		roleID := ""
-		if v.GetRole() != nil {
-			roleID = v.GetRole().GetId()
+		rb := RoleBinding{
+			UID:         v.GetId(),
+			IdentityUID: v.GetIdentity(),
 		}
-		out[i] = RoleBinding{UID: v.GetId(), Identity: v.GetIdentity(), Role: roleID}
+		if r := v.GetRole(); r != nil {
+			rb.RoleUID = r.GetId()
+		}
+		out[i] = rb
 	}
 	return out, nil
 }
@@ -132,24 +136,73 @@ func (c *Client) ListGroupInvites(groupUID string) ([]GroupInvite, error) {
 	}
 	out := make([]GroupInvite, len(resp.Items))
 	for i, v := range resp.Items {
-		roleID := ""
+		roleUID := ""
 		if v.GetRole() != nil {
-			roleID = v.GetRole().GetId()
+			roleUID = v.GetRole().GetId()
 		}
-		var expiresAt, createdAt time.Time
+		var expirationTime, createTime time.Time
 		if v.GetExpiration() != nil {
-			expiresAt = v.GetExpiration().AsTime()
+			expirationTime = v.GetExpiration().AsTime()
 		}
 		if v.GetCreatedAt() != nil {
-			createdAt = v.GetCreatedAt().AsTime()
+			createTime = v.GetCreatedAt().AsTime()
 		}
 		out[i] = GroupInvite{
-			UID:        v.GetId(),
-			Email:      v.GetEmail(),
-			Role:       roleID,
-			ExpiresAt:  expiresAt,
-			CreateTime: createdAt,
+			UID:            v.GetId(),
+			Email:          v.GetEmail(),
+			RoleUID:        roleUID,
+			ExpirationTime: expirationTime,
+			CreateTime:     createTime,
 		}
+	}
+	return out, nil
+}
+
+func (c *Client) ListAccountAssociations(groupUID string) ([]AccountAssociation, error) {
+	ctx := context.Background()
+	filter := &iamv1.AccountAssociationsFilter{}
+	if groupUID != "" {
+		filter.Group = groupUID
+	}
+	resp, err := c.platform.IAM().AccountAssociations().List(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AccountAssociation, len(resp.Items))
+	for i, v := range resp.Items {
+		aa := AccountAssociation{
+			UID:         v.GetGroup(),
+			Name:        v.GetName(),
+			Description: v.GetDescription(),
+		}
+		if am := v.GetAmazon(); am != nil {
+			aa.Amazon = &AccountAssociationAmazon{Account: am.GetAccount()}
+		}
+		if g := v.GetGoogle(); g != nil {
+			aa.Google = &AccountAssociationGoogle{
+				ProjectID:     g.GetProjectId(),
+				ProjectNumber: g.GetProjectNumber(),
+			}
+		}
+		if cg := v.GetChainguard(); cg != nil {
+			aa.Chainguard = &AccountAssociationChainguard{ServiceBindings: cg.GetServiceBindings()}
+		}
+		if gh := v.GetGithub(); gh != nil {
+			appID := strconv.FormatInt(gh.GetAppId(), 10)
+			aa.GitHub = &AccountAssociationGitHub{
+				AppInstallations: map[string]AccountAssociationGitHubAppInstallations{
+					appID: {
+						Installations: []AccountAssociationGitHubInstallation{
+							{
+								InstallationID: strconv.FormatInt(gh.GetInstallationId(), 10),
+								Name:           gh.GetName(),
+							},
+						},
+					},
+				},
+			}
+		}
+		out[i] = aa
 	}
 	return out, nil
 }
@@ -182,11 +235,11 @@ func (c *Client) ListTags(repoUID string) ([]Tag, error) {
 	}
 	out := make([]Tag, len(resp.Items))
 	for i, v := range resp.Items {
-		var lastUpdated time.Time
+		var updateTime time.Time
 		if v.GetLastUpdated() != nil {
-			lastUpdated = v.GetLastUpdated().AsTime()
+			updateTime = v.GetLastUpdated().AsTime()
 		}
-		out[i] = Tag{UID: v.GetId(), Name: v.GetName(), Digest: v.GetDigest(), CreateTime: lastUpdated}
+		out[i] = Tag{UID: v.GetId(), Name: v.GetName(), Digest: v.GetDigest(), UpdateTime: updateTime}
 	}
 	return out, nil
 }
@@ -205,7 +258,6 @@ func (c *Client) ListAdvisories(groupUID string) ([]Advisory, error) {
 		for _, adv := range doc.GetAdvisories() {
 			out = append(out, Advisory{
 				UID:     adv.GetId(),
-				Name:    adv.GetId(),
 				Aliases: adv.GetAliases(),
 			})
 		}

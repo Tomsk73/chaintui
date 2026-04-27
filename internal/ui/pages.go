@@ -182,7 +182,7 @@ func NewRoleBindingsPage(client *api.Client, groupUID string) *ListPage {
 		for i, v := range items {
 			rows[i] = RowData{
 				UID:     v.UID,
-				Columns: []string{shortUID(v.UID), shortUID(v.Identity), shortUID(v.Role), relativeTime(v.CreateTime)},
+				Columns: []string{shortUID(v.UID), shortUID(v.IdentityUID), shortUID(v.RoleUID), relativeTime(v.CreateTime)},
 				Raw:     v,
 			}
 		}
@@ -236,7 +236,7 @@ func NewGroupInvitesPage(client *api.Client, groupUID string) *ListPage {
 		for i, v := range items {
 			rows[i] = RowData{
 				UID:     v.UID,
-				Columns: []string{v.Email, shortUID(v.Role), relativeTime(v.ExpiresAt), relativeTime(v.CreateTime)},
+				Columns: []string{v.Email, shortUID(v.RoleUID), relativeTime(v.ExpirationTime), relativeTime(v.CreateTime)},
 				Raw:     v,
 			}
 		}
@@ -250,7 +250,7 @@ func NewGroupInvitesPage(client *api.Client, groupUID string) *ListPage {
 func NewReposPage(client *api.Client, groupUID string) *ListPage {
 	cols := []table.Column{
 		{Title: "NAME", Width: 35},
-		{Title: "REGISTRY", Width: 30},
+		{Title: "DESCRIPTION", Width: 30},
 		{Title: "CREATED", Width: 14},
 	}
 	load := func() ([]RowData, error) {
@@ -262,7 +262,7 @@ func NewReposPage(client *api.Client, groupUID string) *ListPage {
 		for i, v := range items {
 			rows[i] = RowData{
 				UID:     v.UID,
-				Columns: []string{v.Name, v.Registry, relativeTime(v.CreateTime)},
+				Columns: []string{v.Name, v.Description, relativeTime(v.CreateTime)},
 				Raw:     v,
 			}
 		}
@@ -295,7 +295,7 @@ func NewTagsPage(client *api.Client, repoUID string) *ListPage {
 			}
 			rows[i] = RowData{
 				UID:     v.UID,
-				Columns: []string{v.Name, digest, relativeTime(v.CreateTime)},
+				Columns: []string{v.Name, digest, relativeTime(v.UpdateTime)},
 				Raw:     v,
 			}
 		}
@@ -308,9 +308,9 @@ func NewTagsPage(client *api.Client, repoUID string) *ListPage {
 
 func NewAdvisoriesPage(client *api.Client, groupUID string) *ListPage {
 	cols := []table.Column{
-		{Title: "NAME", Width: 20},
-		{Title: "ALIASES", Width: 30},
-		{Title: "DESCRIPTION", Width: 40},
+		{Title: "ID", Width: 20},
+		{Title: "ARTIFACT", Width: 30},
+		{Title: "ALIASES", Width: 40},
 		{Title: "CREATED", Width: 14},
 	}
 	load := func() ([]RowData, error) {
@@ -320,14 +320,14 @@ func NewAdvisoriesPage(client *api.Client, groupUID string) *ListPage {
 		}
 		rows := make([]RowData, len(items))
 		for i, v := range items {
-			aliases := strings.Join(v.Aliases, ", ")
-			desc := v.Description
-			if len(desc) > 38 {
-				desc = desc[:35] + "..."
+			id := v.AdvisoryID
+			if id == "" {
+				id = v.UID
 			}
+			aliases := strings.Join(v.Aliases, ", ")
 			rows[i] = RowData{
 				UID:     v.UID,
-				Columns: []string{v.Name, aliases, desc, relativeTime(v.CreateTime)},
+				Columns: []string{id, v.ArtifactName, aliases, relativeTime(v.CreateTime)},
 				Raw:     v,
 			}
 		}
