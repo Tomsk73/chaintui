@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"fmt"
+	"log"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -9,6 +12,23 @@ import (
 
 	"github.com/Tomsk73/chaintui/internal/api"
 )
+
+var debugLog *log.Logger
+
+func InitDebugLog() error {
+	f, err := os.OpenFile("/tmp/chaintui-debug.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	debugLog = log.New(f, "", log.Ltime|log.Lmicroseconds)
+	return nil
+}
+
+func logMsg(msg tea.Msg) {
+	if debugLog != nil {
+		debugLog.Printf("%T %s", msg, fmt.Sprintf("%+v", msg))
+	}
+}
 
 const (
 	headerH = 3
@@ -72,6 +92,7 @@ func (a App) Init() tea.Cmd {
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	logMsg(msg)
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
@@ -211,8 +232,8 @@ func resolveResourcePage(client *api.Client, resource, groupCtx string) Page {
 		return NewGroupInvitesPage(client, groupCtx)
 	case "repo", "repos", "repository":
 		return NewReposPage(client, groupCtx)
-	case "tag", "tags":
-		return NewTagsPage(client, groupCtx)
+		//	case "tag", "tags":
+		//		return NewTagsPage(client, groupCtx)
 	case "adv", "advisory", "advisories":
 		return NewAdvisoriesPage(client, groupCtx)
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
@@ -11,6 +12,16 @@ import (
 )
 
 func main() {
+	debug := flag.Bool("debug", false, "write debug log to /tmp/chaintui-debug.log")
+	flag.BoolVar(debug, "d", false, "write debug log to /tmp/chaintui-debug.log (shorthand)")
+	flag.Parse()
+
+	if *debug {
+		if err := ui.InitDebugLog(); err != nil {
+			fmt.Fprintln(os.Stderr, "debug log:", err)
+		}
+	}
+
 	client, err := api.NewClient()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "auth error:", err)
