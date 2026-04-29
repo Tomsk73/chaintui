@@ -20,6 +20,7 @@ type Page interface {
 	tea.Model
 	ResourceType() string
 	GroupContext() string
+	Label() string
 	SetSize(w, h int)
 }
 
@@ -189,12 +190,7 @@ func (a App) View() string {
 func (a App) breadcrumb() string {
 	parts := make([]string, len(a.stack))
 	for i, p := range a.stack {
-		ctx := p.GroupContext()
-		if ctx != "" {
-			parts[i] = shortUID(ctx)
-		} else {
-			parts[i] = p.ResourceType()
-		}
+		parts[i] = p.Label()
 	}
 	return strings.Join(parts, " > ")
 }

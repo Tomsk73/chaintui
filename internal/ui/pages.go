@@ -102,7 +102,7 @@ func NewGroupsPage(client *api.Client, parentUID string) *ListPage {
 		return rows, nil
 	}
 	enter := func(row RowData) tea.Cmd {
-		return pushPage(NewGroupsPage(client, row.UID))
+		return pushPage(NewGroupsPage(client, row.UID).WithLabel(row.Columns[0]))
 	}
 	return newListPage("groups", parentUID, cols, load, enter)
 }
@@ -269,7 +269,7 @@ func NewReposPage(client *api.Client, groupUID string) *ListPage {
 		return rows, nil
 	}
 	enter := func(row RowData) tea.Cmd {
-		return pushPage(NewTagsPage(client, row.UID))
+		return pushPage(NewTagsPage(client, row.UID).WithLabel(row.Columns[0]))
 	}
 	return newListPage("repos", groupUID, cols, load, enter)
 }

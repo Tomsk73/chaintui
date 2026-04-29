@@ -28,6 +28,7 @@ type LoadedMsg struct {
 type ListPage struct {
 	resource string // "groups", "identities", etc.
 	groupCtx string // scoping UIDP
+	label    string // breadcrumb display name for this page
 
 	cols    []table.Column
 	allRows []RowData // unfiltered
@@ -86,6 +87,17 @@ func newListPage(
 
 func (p *ListPage) ResourceType() string { return p.resource }
 func (p *ListPage) GroupContext() string  { return p.groupCtx }
+func (p *ListPage) Label() string {
+	if p.label != "" {
+		return p.label
+	}
+	return p.resource
+}
+
+func (p *ListPage) WithLabel(label string) *ListPage {
+	p.label = label
+	return p
+}
 
 func (p *ListPage) SetSize(w, h int) {
 	p.width = w
@@ -274,6 +286,7 @@ func newDetailPage(resource string, row RowData) *detailPage {
 
 func (d *detailPage) ResourceType() string { return d.resource }
 func (d *detailPage) GroupContext() string  { return "" }
+func (d *detailPage) Label() string        { return d.resource }
 func (d *detailPage) SetSize(w, h int)     { d.width = w; d.height = h }
 func (d *detailPage) Init() tea.Cmd        { return nil }
 
