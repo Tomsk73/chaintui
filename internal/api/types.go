@@ -400,3 +400,12 @@ type AdvisoryEventAnalysisNotPlanned struct {
 type AdvisoryEventPendingUpstreamFix struct {
 	Note string `json:"note,omitempty"`
 }
+
+// ---- SBOM types ----
+
+type SBOMPackage struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Purl    string `json:"purl,omitempty"`
+	License string `json:"license,omitempty"`
+}

@@ -301,7 +301,40 @@ func NewTagsPage(client *api.Client, repoUID string) *ListPage {
 		}
 		return rows, nil
 	}
-	return newListPage("tags", repoUID, cols, load, nil)
+	enter := func(row RowData) tea.Cmd {
+		tag, ok := row.Raw.(api.Tag)
+		if !ok {
+			return nil
+		}
+		return pushPage(NewSBOMPage(client, repoUID, tag.Name, tag.Digest).WithLabel(tag.Name + " sbom"))
+	}
+	return newListPage("tags", repoUID, cols, load, enter)
+}
+
+// --- SBOM ---
+
+func NewSBOMPage(client *api.Client, repoUID, tagName, digest string) *ListPage {
+	cols := []table.Column{
+		{Title: "PACKAGE", Width: 35},
+		{Title: "VERSION", Width: 25},
+		{Title: "PURL", Width: 50},
+	}
+	load := func() ([]RowData, error) {
+		pkgs, err := client.GetTagSBOM(repoUID, digest)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]RowData, len(pkgs))
+		for i, p := range pkgs {
+			rows[i] = RowData{
+				UID:     fmt.Sprintf("%s@%s", p.Name, p.Version),
+				Columns: []string{p.Name, p.Version, p.Purl},
+				Raw:     p,
+			}
+		}
+		return rows, nil
+	}
+	return newListPage("sbom", repoUID, cols, load, nil)
 }
 
 // --- Advisories ---

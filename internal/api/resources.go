@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 
 	advisoryv1 "chainguard.dev/sdk/proto/platform/advisory/v1"
@@ -10,6 +11,27 @@ import (
 	iamv1 "chainguard.dev/sdk/proto/platform/iam/v1"
 	registryv1 "chainguard.dev/sdk/proto/platform/registry/v1"
 )
+
+// parsePURL extracts name and version from a PURL string.
+// PURL format: pkg:type/namespace/name@version
+func parsePURL(purl string) (name, version string) {
+	// Strip scheme prefix "pkg:type/"
+	s := purl
+	if i := strings.Index(s, ":"); i >= 0 {
+		s = s[i+1:]
+	}
+	if i := strings.Index(s, "/"); i >= 0 {
+		s = s[i+1:] // strip type
+	}
+	// s is now "namespace/name@version" or "name@version"
+	if i := strings.Index(s, "/"); i >= 0 {
+		s = s[i+1:] // strip namespace
+	}
+	// s is now "name@version?qualifiers"
+	s, _, _ = strings.Cut(s, "?")
+	name, version, _ = strings.Cut(s, "@")
+	return
+}
 
 func uidpFilter(groupUID string) *commonv1.UIDPFilter {
 	if groupUID != "" {
@@ -240,6 +262,37 @@ func (c *Client) ListTags(repoUID string) ([]Tag, error) {
 			updateTime = v.GetLastUpdated().AsTime()
 		}
 		out[i] = Tag{UID: v.GetId(), Name: v.GetName(), Digest: v.GetDigest(), UpdateTime: updateTime}
+	}
+	return out, nil
+}
+
+func (c *Client) GetTagSBOM(repoUID, digest string) ([]SBOMPackage, error) {
+	ctx := context.Background()
+
+	// Chainguard tags point to OCI index manifests (multi-arch), so we use
+	// IndexFilter rather than ImageDigest to match against the index digest.
+	resp, err := c.platform.Registry().Registry().ListManifestMetadata(ctx, &registryv1.ManifestMetadataFilter{
+		RepoId: repoUID,
+		Items: []*registryv1.ManifestMetadataFilterEntry{
+			{Filter: &registryv1.ManifestMetadataFilterEntry_IndexFilter{
+				IndexFilter: &registryv1.ManifestMetadataIndexFilter{Digest: digest, Arch: "amd64"},
+			}},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []SBOMPackage
+	for _, m := range resp.GetItems() {
+		for _, pkg := range m.GetPkgMetadata() {
+			name, version := parsePURL(pkg.GetPurl())
+			out = append(out, SBOMPackage{
+				Name:    name,
+				Version: version,
+				Purl:    pkg.GetPurl(),
+				License: pkg.GetLicense(),
+			})
+		}
 	}
 	return out, nil
 }
