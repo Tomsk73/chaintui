@@ -1,10 +1,13 @@
 package ui
 
 import (
+	"bytes"
 	"strings"
 	"sync"
 
 	termimg "github.com/blacktop/go-termimg"
+
+	"github.com/Tomsk73/chaintui/internal/resources"
 )
 
 var (
@@ -14,14 +17,14 @@ var (
 
 func logo() string {
 	logoOnce.Do(func() {
-		img, err := termimg.NewImageWidgetFromFile("../resources/linky_green.png")
+		img, err := termimg.From(bytes.NewReader(resources.LinkyGreen))
 		if err != nil {
 			return
 		}
 		// Halfblocks produces plain Unicode block chars that lipgloss can measure.
-		// SetSize(4,1) gives a small square; trim the trailing newline so
+		// Width(4)+Height(1) gives a small square; trim the trailing newline so
 		// the result is a single line safe for JoinHorizontal.
-		s, err := img.SetSize(4, 1).SetProtocol(termimg.Halfblocks).Render()
+		s, err := img.Width(4).Height(4).Protocol(termimg.Halfblocks).Render()
 		if err != nil {
 			return
 		}
