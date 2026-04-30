@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"encoding/csv"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -334,7 +336,25 @@ func NewSBOMPage(client *api.Client, repoUID, tagName, digest string) *ListPage 
 		}
 		return rows, nil
 	}
-	return newListPage("sbom", repoUID, cols, load, nil)
+	save := func(filename string, rows []RowData) error {
+		f, err := os.Create(filename)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		w := csv.NewWriter(f)
+		w.Write([]string{"name", "version", "purl", "license"}) //nolint
+		for _, row := range rows {
+			pkg, ok := row.Raw.(api.SBOMPackage)
+			if !ok {
+				continue
+			}
+			w.Write([]string{pkg.Name, pkg.Version, pkg.Purl, pkg.License}) //nolint
+		}
+		w.Flush()
+		return w.Error()
+	}
+	return newListPage("sbom", repoUID, cols, load, nil).WithSave(save)
 }
 
 // --- Advisories ---

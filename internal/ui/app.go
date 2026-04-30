@@ -101,13 +101,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-	case SelectOrgMsg:
-		a.orgCtx = msg.UID
-		a.orgName = msg.Name
-		page := NewGroupsPage(a.client, msg.UID)
-		page.SetSize(a.width, a.contentH())
-		a.stack = []Page{page}
-		return a, page.Init()
+		//	case SelectOrgMsg:
+		//		a.orgCtx = msg.UID
+		//		a.orgName = msg.Name
+		//		page := NewGroupsPage(a.client, msg.UID)
+		//		page.SetSize(a.width, a.contentH())
+		//		a.stack = []Page{page}
+		//		return a, page.Init()
 
 	case PushMsg:
 		msg.P.SetSize(a.width, a.contentH())
@@ -152,11 +152,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.cmd.SetValue("")
 			a.cmd.Focus()
 			return a, textinput.Blink
-		case "o":
-			page := NewOrgSelectorPage(a.client)
-			page.SetSize(a.width, a.contentH())
-			a.stack = append(append([]Page{}, a.stack...), page)
-			return a, page.Init()
+			//		case "o":
+			//			page := NewOrgSelectorPage(a.client)
+			//			page.SetSize(a.width, a.contentH())
+			//			a.stack = append(append([]Page{}, a.stack...), page)
+			//			return a, page.Init()
 		}
 	}
 
@@ -283,14 +283,17 @@ func renderHeader(width int, resource, groupPath, breadcrumb string) string {
 
 func renderFooter(width int, resource string, canGoBack bool) string {
 	hints := []string{
-		keyHint("o", "select org"),
+		//	keyHint("o", "select org"),
 		keyHint(":", "cmd"),
 		keyHint("/", "filter"),
 		keyHint("d", "describe"),
 		keyHint("r", "refresh"),
 	}
-	if resource == "groups" || resource == "repos" {
+	if resource == "groups" || resource == "repos" || resource == "tags" {
 		hints = append(hints, keyHint("↵", "drill down"))
+	}
+	if resource == "sbom" {
+		hints = append(hints, keyHint("s", "save csv"))
 	}
 	if canGoBack {
 		hints = append(hints, keyHint("esc", "back"))

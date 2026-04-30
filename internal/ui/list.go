@@ -42,6 +42,11 @@ type ListPage struct {
 	filterIn   textinput.Model
 	filter     string
 
+	saveMode bool
+	saveIn   textinput.Model
+	saveMsg  string
+	saveFn   func(filename string, rows []RowData) error
+
 	width  int
 	height int
 
@@ -96,6 +101,15 @@ func (p *ListPage) Label() string {
 
 func (p *ListPage) WithLabel(label string) *ListPage {
 	p.label = label
+	return p
+}
+
+func (p *ListPage) WithSave(fn func(filename string, rows []RowData) error) *ListPage {
+	si := textinput.New()
+	si.Placeholder = "filename..."
+	si.CharLimit = 120
+	p.saveIn = si
+	p.saveFn = fn
 	return p
 }
 
@@ -160,6 +174,9 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if p.filterMode {
 			return p.updateFilter(msg)
 		}
+		if p.saveMode {
+			return p.updateSave(msg)
+		}
 		switch msg.String() {
 		case "r":
 			p.loading = true
@@ -170,6 +187,14 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.filterIn.SetValue("")
 			p.filterIn.Focus()
 			return p, textinput.Blink
+		case "s":
+			if p.saveFn != nil {
+				p.saveMode = true
+				p.saveMsg = ""
+				p.saveIn.SetValue("")
+				p.saveIn.Focus()
+				return p, textinput.Blink
+			}
 		case "d":
 			if row, ok := p.selectedRow(); ok {
 				return p, func() tea.Msg { return PushMsg{P: newDetailPage(p.resource, row)} }
@@ -201,6 +226,31 @@ func (p *ListPage) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	p.filterIn, cmd = p.filterIn.Update(msg)
 	p.filter = p.filterIn.Value()
 	p.applyFilter()
+	return p, cmd
+}
+
+func (p *ListPage) updateSave(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		p.saveMode = false
+		p.saveIn.Blur()
+		return p, nil
+	case "enter":
+		p.saveMode = false
+		p.saveIn.Blur()
+		name := strings.TrimSpace(p.saveIn.Value())
+		if name == "" {
+			return p, nil
+		}
+		if err := p.saveFn(name, p.allRows); err != nil {
+			p.saveMsg = errStyle.Render("save failed: " + err.Error())
+		} else {
+			p.saveMsg = dimStyle.Render("saved to " + name)
+		}
+		return p, nil
+	}
+	var cmd tea.Cmd
+	p.saveIn, cmd = p.saveIn.Update(msg)
 	return p, cmd
 }
 
@@ -249,9 +299,14 @@ func (p *ListPage) View() string {
 	tableView := p.table.View()
 
 	var bottom string
-	if p.filterMode {
+	switch {
+	case p.saveMode:
+		bottom = cmdBarStyle.Render("save to: " + p.saveIn.View())
+	case p.saveMsg != "":
+		bottom = p.saveMsg
+	case p.filterMode:
 		bottom = cmdBarStyle.Render("/ " + p.filterIn.View())
-	} else if p.filter != "" {
+	case p.filter != "":
 		bottom = dimStyle.Render(fmt.Sprintf("filter: %q  (/ to change, esc to clear)", p.filter))
 	}
 
