@@ -224,7 +224,8 @@ func (a App) groupPath() string {
 		parts = append(parts, a.orgName)
 	}
 	for _, p := range a.stack {
-		if p.ResourceType() == "groups" && p.Label() != "groups" {
+		rt := p.ResourceType()
+		if (rt == "groups" || rt == "group") && p.Label() != "groups" {
 			parts = append(parts, p.Label())
 		}
 	}
@@ -288,7 +289,7 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 		keyHint("d", "describe"),
 		keyHint("r", "refresh"),
 	}
-	if resource == "groups" || resource == "repos" || resource == "tags" {
+	if resource == "groups" || resource == "group" || resource == "repos" || resource == "tags" {
 		hints = append(hints, keyHint("↵", "drill down"))
 	}
 	if resource == "sbom" {

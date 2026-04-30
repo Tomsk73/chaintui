@@ -104,9 +104,69 @@ func NewGroupsPage(client *api.Client, parentUID string) *ListPage {
 		return rows, nil
 	}
 	enter := func(row RowData) tea.Cmd {
-		return pushPage(NewGroupsPage(client, row.UID).WithLabel(row.Columns[0]))
+		return pushPage(NewGroupResourcesPage(client, row.UID, row.Columns[0]))
 	}
 	return newListPage("groups", parentUID, cols, load, enter)
+}
+
+// --- Group resource selector ---
+
+func NewGroupResourcesPage(client *api.Client, groupUID, groupName string) *ListPage {
+	cols := []table.Column{
+		{Title: "RESOURCE", Width: 25},
+		{Title: "DESCRIPTION", Width: 50},
+	}
+
+	type entry struct {
+		name, desc string
+		make       func() Page
+	}
+	entries := []entry{
+		{"groups", "Child groups", func() Page {
+			return NewGroupsPage(client, groupUID).WithLabel(groupName + " groups")
+		}},
+		{"repos", "Container image repositories", func() Page {
+			return NewReposPage(client, groupUID).WithLabel(groupName + " repos")
+		}},
+		{"identities", "Workload identities", func() Page {
+			return NewIdentitiesPage(client, groupUID).WithLabel(groupName + " identities")
+		}},
+		{"roles", "IAM roles", func() Page {
+			return NewRolesPage(client, groupUID).WithLabel(groupName + " roles")
+		}},
+		{"rolebindings", "Role bindings", func() Page {
+			return NewRoleBindingsPage(client, groupUID).WithLabel(groupName + " rolebindings")
+		}},
+		{"identityproviders", "Identity providers", func() Page {
+			return NewIDPsPage(client, groupUID).WithLabel(groupName + " idps")
+		}},
+		{"groupinvites", "Group invites", func() Page {
+			return NewGroupInvitesPage(client, groupUID).WithLabel(groupName + " invites")
+		}},
+		{"advisories", "Security advisories", func() Page {
+			return NewAdvisoriesPage(client, groupUID).WithLabel(groupName + " advisories")
+		}},
+	}
+
+	load := func() ([]RowData, error) {
+		rows := make([]RowData, len(entries))
+		for i, e := range entries {
+			rows[i] = RowData{
+				UID:     e.name,
+				Columns: []string{e.name, e.desc},
+				Raw:     e.make,
+			}
+		}
+		return rows, nil
+	}
+	enter := func(row RowData) tea.Cmd {
+		makePage, ok := row.Raw.(func() Page)
+		if !ok {
+			return nil
+		}
+		return pushPage(makePage())
+	}
+	return newListPage("group", groupUID, cols, load, enter).WithLabel(groupName)
 }
 
 // --- Identities ---
