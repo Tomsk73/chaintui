@@ -260,6 +260,7 @@ func resolveResourcePage(client *api.Client, resource, groupCtx string) Page {
 
 func renderHeader(width int, resource, groupPath, breadcrumb string) string {
 	left := lipgloss.JoinHorizontal(lipgloss.Left,
+		logo(),
 		appNameStyle.Render("chaintui"),
 		sepStyle.Render("  │  "),
 		ctxStyle.Render(groupPath),
