@@ -197,7 +197,7 @@ func (a App) View() string {
 		return "Initializing..."
 	}
 	top := a.top()
-	header := renderHeader(a.width, top.ResourceType(), top.GroupContext(), a.orgName, a.breadcrumb())
+	header := renderHeader(a.width, top.ResourceType(), a.groupPath(), a.breadcrumb())
 	content := lipgloss.NewStyle().Height(a.contentH()).Render(top.View())
 	var footer string
 	if a.cmdMode {
@@ -214,6 +214,24 @@ func (a App) breadcrumb() string {
 		parts[i] = p.Label()
 	}
 	return strings.Join(parts, " > ")
+}
+
+// groupPath builds a human-readable org/group context from the org name and
+// any named group pages that have been drilled into on the navigation stack.
+func (a App) groupPath() string {
+	var parts []string
+	if a.orgName != "" {
+		parts = append(parts, a.orgName)
+	}
+	for _, p := range a.stack {
+		if p.ResourceType() == "groups" && p.Label() != "groups" {
+			parts = append(parts, p.Label())
+		}
+	}
+	if len(parts) == 0 {
+		return "no org"
+	}
+	return strings.Join(parts, " / ")
 }
 
 func resolveResourcePage(client *api.Client, resource, groupCtx string) Page {
@@ -240,23 +258,13 @@ func resolveResourcePage(client *api.Client, resource, groupCtx string) Page {
 	return nil
 }
 
-func renderHeader(width int, resource, groupCtx, orgName, breadcrumb string) string {
-	ctx := groupCtx
-	if ctx == "" {
-		ctx = "root"
-	}
-	org := orgName
-	if org == "" {
-		org = "no org"
-	}
+func renderHeader(width int, resource, groupPath, breadcrumb string) string {
 	left := lipgloss.JoinHorizontal(lipgloss.Left,
 		appNameStyle.Render("chaintui"),
 		sepStyle.Render("  │  "),
-		ctxStyle.Render(org),
+		ctxStyle.Render(groupPath),
 		sepStyle.Render("  │  "),
 		resTypeStyle.Render(resource),
-		sepStyle.Render("  │  "),
-		dimStyle.Render(ctx),
 	)
 	right := dimStyle.Render(breadcrumb)
 
