@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -47,6 +48,10 @@ type ListPage struct {
 	saveMsg  string
 	saveFn   func(filename string, rows []RowData) error
 
+	sortMode bool
+	sortCol  int  // -1 = unsorted
+	sortAsc  bool
+
 	width  int
 	height int
 
@@ -87,6 +92,8 @@ func newListPage(
 		filterIn: fi,
 		loadFn:   loadFn,
 		enterFn:  enterFn,
+		sortCol:  -1,
+		sortAsc:  true,
 	}
 }
 
@@ -177,6 +184,9 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if p.saveMode {
 			return p.updateSave(msg)
 		}
+		if p.sortMode {
+			return p.updateSort(msg)
+		}
 		switch msg.String() {
 		case "r":
 			p.loading = true
@@ -195,6 +205,11 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p.saveIn.Focus()
 				return p, textinput.Blink
 			}
+		case "o":
+			if !p.loading {
+				p.sortMode = true
+			}
+			return p, nil
 		case "d":
 			if row, ok := p.selectedRow(); ok {
 				return p, func() tea.Msg { return PushMsg{P: newDetailPage(p.resource, row)} }
@@ -254,13 +269,49 @@ func (p *ListPage) updateSave(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return p, cmd
 }
 
+func (p *ListPage) updateSort(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "o":
+		p.sortMode = false
+		return p, nil
+	}
+	// Number keys 1–9 pick a column.
+	if len(msg.String()) == 1 && msg.String() >= "1" && msg.String() <= "9" {
+		col := int(msg.String()[0] - '1')
+		if col < len(p.cols) {
+			if p.sortCol == col {
+				p.sortAsc = !p.sortAsc
+			} else {
+				p.sortCol = col
+				p.sortAsc = true
+			}
+			p.sortMode = false
+			p.applyFilter()
+		}
+	}
+	return p, nil
+}
+
 func (p *ListPage) applyFilter() {
 	f := strings.ToLower(p.filter)
-	var rows []table.Row
+	var filtered []RowData
 	for _, rd := range p.allRows {
 		if f == "" || p.rowMatches(rd, f) {
-			rows = append(rows, rd.Columns)
+			filtered = append(filtered, rd)
 		}
+	}
+	if p.sortCol >= 0 && p.sortCol < len(p.cols) {
+		col, asc := p.sortCol, p.sortAsc
+		sort.SliceStable(filtered, func(i, j int) bool {
+			if asc {
+				return filtered[i].Columns[col] < filtered[j].Columns[col]
+			}
+			return filtered[i].Columns[col] > filtered[j].Columns[col]
+		})
+	}
+	rows := make([]table.Row, len(filtered))
+	for i, rd := range filtered {
+		rows[i] = rd.Columns
 	}
 	p.table.SetRows(rows)
 }
@@ -304,6 +355,18 @@ func (p *ListPage) View() string {
 		bottom = cmdBarStyle.Render("save to: " + p.saveIn.View())
 	case p.saveMsg != "":
 		bottom = p.saveMsg
+	case p.sortMode:
+		parts := make([]string, len(p.cols))
+		for i, c := range p.cols {
+			parts[i] = fmt.Sprintf("%d:%s", i+1, c.Title)
+		}
+		bottom = cmdBarStyle.Render("sort by: " + strings.Join(parts, "  "))
+	case p.sortCol >= 0:
+		dir := "▲"
+		if !p.sortAsc {
+			dir = "▼"
+		}
+		bottom = dimStyle.Render(fmt.Sprintf("sorted by %s %s  (o to change)", p.cols[p.sortCol].Title, dir))
 	case p.filterMode:
 		bottom = cmdBarStyle.Render("/ " + p.filterIn.View())
 	case p.filter != "":
