@@ -49,8 +49,14 @@ type ListPage struct {
 	saveFn   func(filename string, rows []RowData) error
 
 	sortMode bool
-	sortCol  int  // -1 = unsorted
+	sortCol  int // -1 = unsorted
 	sortAsc  bool
+
+	pageSize     int
+	pageIdx      int
+	totalRows    int      // count after filter+sort, before pagination
+	displayedRows []RowData // rows on the current page (for selectedRow lookup)
+	filteredRows  []RowData // all filtered+sorted rows (for save)
 
 	width  int
 	height int
@@ -94,6 +100,7 @@ func newListPage(
 		enterFn:  enterFn,
 		sortCol:  -1,
 		sortAsc:  true,
+		pageSize: 50,
 	}
 }
 
@@ -108,6 +115,13 @@ func (p *ListPage) Label() string {
 
 func (p *ListPage) WithLabel(label string) *ListPage {
 	p.label = label
+	return p
+}
+
+func (p *ListPage) WithPageSize(n int) *ListPage {
+	if n > 0 {
+		p.pageSize = n
+	}
 	return p
 }
 
@@ -210,6 +224,18 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p.sortMode = true
 			}
 			return p, nil
+		case "[":
+			if p.pageIdx > 0 {
+				p.pageIdx--
+				p.applyFilter()
+			}
+			return p, nil
+		case "]":
+			if p.pageIdx < p.totalPages()-1 {
+				p.pageIdx++
+				p.applyFilter()
+			}
+			return p, nil
 		case "d":
 			if row, ok := p.selectedRow(); ok {
 				return p, func() tea.Msg { return PushMsg{P: newDetailPage(p.resource, row)} }
@@ -257,7 +283,7 @@ func (p *ListPage) updateSave(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if name == "" {
 			return p, nil
 		}
-		if err := p.saveFn(name, p.allRows); err != nil {
+		if err := p.saveFn(name, p.filteredRows); err != nil {
 			p.saveMsg = errStyle.Render("save failed: " + err.Error())
 		} else {
 			p.saveMsg = dimStyle.Render("saved to " + name)
@@ -267,6 +293,14 @@ func (p *ListPage) updateSave(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	p.saveIn, cmd = p.saveIn.Update(msg)
 	return p, cmd
+}
+
+func (p *ListPage) totalPages() int {
+	if p.pageSize <= 0 || p.totalRows == 0 {
+		return 1
+	}
+	pages := (p.totalRows + p.pageSize - 1) / p.pageSize
+	return pages
 }
 
 func (p *ListPage) updateSort(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -309,8 +343,26 @@ func (p *ListPage) applyFilter() {
 			return filtered[i].Columns[col] > filtered[j].Columns[col]
 		})
 	}
-	rows := make([]table.Row, len(filtered))
-	for i, rd := range filtered {
+	p.filteredRows = filtered
+	p.totalRows = len(filtered)
+
+	// Clamp page index after any filter/sort change.
+	if tp := p.totalPages(); p.pageIdx >= tp {
+		p.pageIdx = tp - 1
+	}
+	if p.pageIdx < 0 {
+		p.pageIdx = 0
+	}
+
+	start := p.pageIdx * p.pageSize
+	end := start + p.pageSize
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	p.displayedRows = filtered[start:end]
+
+	rows := make([]table.Row, len(p.displayedRows))
+	for i, rd := range p.displayedRows {
 		rows[i] = rd.Columns
 	}
 	p.table.SetRows(rows)
@@ -330,8 +382,7 @@ func (p *ListPage) selectedRow() (RowData, bool) {
 	if sel == nil {
 		return RowData{}, false
 	}
-	// Match back to allRows by UID (first visible column isn't always UID, so match by columns).
-	for _, rd := range p.allRows {
+	for _, rd := range p.displayedRows {
 		if len(rd.Columns) > 0 && rd.Columns[0] == sel[0] {
 			return rd, true
 		}
@@ -361,16 +412,26 @@ func (p *ListPage) View() string {
 			parts[i] = fmt.Sprintf("%d:%s", i+1, c.Title)
 		}
 		bottom = cmdBarStyle.Render("sort by: " + strings.Join(parts, "  "))
-	case p.sortCol >= 0:
-		dir := "▲"
-		if !p.sortAsc {
-			dir = "▼"
-		}
-		bottom = dimStyle.Render(fmt.Sprintf("sorted by %s %s  (o to change)", p.cols[p.sortCol].Title, dir))
 	case p.filterMode:
 		bottom = cmdBarStyle.Render("/ " + p.filterIn.View())
-	case p.filter != "":
-		bottom = dimStyle.Render(fmt.Sprintf("filter: %q  (/ to change, esc to clear)", p.filter))
+	default:
+		var parts []string
+		if p.sortCol >= 0 {
+			dir := "▲"
+			if !p.sortAsc {
+				dir = "▼"
+			}
+			parts = append(parts, fmt.Sprintf("sorted by %s %s", p.cols[p.sortCol].Title, dir))
+		}
+		if p.filter != "" {
+			parts = append(parts, fmt.Sprintf("filter: %q", p.filter))
+		}
+		if p.totalPages() > 1 {
+			parts = append(parts, fmt.Sprintf("page %d/%d  [ ]", p.pageIdx+1, p.totalPages()))
+		}
+		if len(parts) > 0 {
+			bottom = dimStyle.Render(strings.Join(parts, "  │  "))
+		}
 	}
 
 	if bottom != "" {
