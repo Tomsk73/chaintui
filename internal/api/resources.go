@@ -6,16 +6,17 @@ import (
 	"strings"
 	"time"
 
-	advisoryv1 "chainguard.dev/sdk/proto/platform/advisory/v1"
+	iamv2 "chainguard.dev/sdk/proto/chainguard/platform/iam/v2beta1"
+	registryv2 "chainguard.dev/sdk/proto/chainguard/platform/registry/v2beta1"
+	vulnv2 "chainguard.dev/sdk/proto/chainguard/platform/vulnerabilities/v2beta1"
 	commonv1 "chainguard.dev/sdk/proto/platform/common/v1"
-	iamv1 "chainguard.dev/sdk/proto/platform/iam/v1"
 	registryv1 "chainguard.dev/sdk/proto/platform/registry/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // parsePURL extracts name and version from a PURL string.
 // PURL format: pkg:type/namespace/name@version
 func parsePURL(purl string) (name, version string) {
-	// Strip scheme prefix "pkg:type/"
 	s := purl
 	if i := strings.Index(s, ":"); i >= 0 {
 		s = s[i+1:]
@@ -23,11 +24,9 @@ func parsePURL(purl string) (name, version string) {
 	if i := strings.Index(s, "/"); i >= 0 {
 		s = s[i+1:] // strip type
 	}
-	// s is now "namespace/name@version" or "name@version"
 	if i := strings.Index(s, "/"); i >= 0 {
 		s = s[i+1:] // strip namespace
 	}
-	// s is now "name@version?qualifiers"
 	s, _, _ = strings.Cut(s, "?")
 	name, version, _ = strings.Cut(s, "@")
 	return
@@ -40,160 +39,257 @@ func uidpFilter(groupUID string) *commonv1.UIDPFilter {
 	return &commonv1.UIDPFilter{InRoot: true}
 }
 
-// ListMyOrganizations returns the root-level groups (orgs) the current user
-// belongs to, using uidp.ancestorsOf scoped to the user's own subject UIDP.
-// Falls back to all root groups when the subject is unavailable.
-func (c *Client) ListMyOrganizations() ([]Group, error) {
+func tsTime(ts *timestamppb.Timestamp) time.Time {
+	if ts == nil {
+		return time.Time{}
+	}
+	return ts.AsTime()
+}
+
+// ListMyOrganizations returns one page of root-level groups (orgs) the current
+// user belongs to, using uidp.ancestorsOf scoped to the user's subject UIDP.
+func (c *Client) ListMyOrganizations(opts PageOpts) (Page[Group], error) {
 	ctx := context.Background()
-	filter := &iamv1.GroupFilter{}
+	req := &iamv2.ListGroupsRequest{
+		PageSize:  opts.size(),
+		PageToken: opts.PageToken,
+		OrderBy:   opts.OrderBy,
+	}
 	if sub := c.Subject(); sub != "" {
-		filter.Uidp = &commonv1.UIDPFilter{AncestorsOf: sub}
+		req.Uidp = &commonv1.UIDPFilter{AncestorsOf: sub}
 	} else {
-		filter.Uidp = &commonv1.UIDPFilter{InRoot: true}
+		req.Uidp = &commonv1.UIDPFilter{InRoot: true}
 	}
-	resp, err := c.platform.IAM().Groups().List(ctx, filter)
+	resp, err := c.v2.IAM().GroupsService().ListGroups(ctx, req)
 	if err != nil {
-		return nil, err
+		return Page[Group]{}, err
 	}
-	out := make([]Group, len(resp.Items))
-	for i, g := range resp.Items {
-		out[i] = Group{UID: g.GetId(), Name: g.GetName(), Description: g.GetDescription()}
-	}
-	return out, nil
-}
-
-func (c *Client) ListGroups(parentUID string) ([]Group, error) {
-	ctx := context.Background()
-	resp, err := c.platform.IAM().Groups().List(ctx, &iamv1.GroupFilter{Uidp: uidpFilter(parentUID)})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]Group, len(resp.Items))
-	for i, g := range resp.Items {
-		out[i] = Group{UID: g.GetId(), Name: g.GetName(), Description: g.GetDescription()}
-	}
-	return out, nil
-}
-
-func (c *Client) ListIdentities(groupUID string) ([]Identity, error) {
-	ctx := context.Background()
-	filter := &iamv1.IdentityFilter{}
-	if groupUID != "" {
-		filter.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
-	}
-	resp, err := c.platform.IAM().Identities().List(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]Identity, len(resp.Items))
-	for i, v := range resp.Items {
-		out[i] = Identity{UID: v.GetId(), Name: v.GetName(), Description: v.GetDescription()}
-	}
-	return out, nil
-}
-
-func (c *Client) ListRoles(groupUID string) ([]Role, error) {
-	ctx := context.Background()
-	filter := &iamv1.RoleFilter{}
-	if groupUID != "" {
-		filter.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
-	}
-	resp, err := c.platform.IAM().Roles().List(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]Role, len(resp.Items))
-	for i, v := range resp.Items {
-		out[i] = Role{UID: v.GetId(), Name: v.GetName(), Description: v.GetDescription(), Capabilities: v.GetCapabilities()}
-	}
-	return out, nil
-}
-
-func (c *Client) ListRoleBindings(groupUID string) ([]RoleBinding, error) {
-	ctx := context.Background()
-	filter := &iamv1.RoleBindingFilter{}
-	if groupUID != "" {
-		filter.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
-	}
-	resp, err := c.platform.IAM().RoleBindings().List(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]RoleBinding, len(resp.Items))
-	for i, v := range resp.Items {
-		rb := RoleBinding{
-			UID:         v.GetId(),
-			IdentityUID: v.GetIdentity(),
+	out := make([]Group, len(resp.GetGroups()))
+	for i, g := range resp.GetGroups() {
+		out[i] = Group{
+			UID:         g.GetUid(),
+			Name:        g.GetName(),
+			Description: g.GetDescription(),
+			CreateTime:  tsTime(g.GetCreateTime()),
+			UpdateTime:  tsTime(g.GetUpdateTime()),
 		}
-		if r := v.GetRole(); r != nil {
-			rb.RoleUID = r.GetId()
-		}
-		out[i] = rb
 	}
-	return out, nil
+	return Page[Group]{
+		Items:         out,
+		NextPageToken: resp.GetNextPageToken(),
+		TotalCount:    resp.GetTotalCount(),
+	}, nil
 }
 
-func (c *Client) ListIdentityProviders(groupUID string) ([]IdentityProvider, error) {
+func (c *Client) ListGroups(parentUID string, opts PageOpts) (Page[Group], error) {
 	ctx := context.Background()
-	filter := &iamv1.IdentityProviderFilter{}
+	resp, err := c.v2.IAM().GroupsService().ListGroups(ctx, &iamv2.ListGroupsRequest{
+		Uidp:      uidpFilter(parentUID),
+		PageSize:  opts.size(),
+		PageToken: opts.PageToken,
+		OrderBy:   opts.OrderBy,
+	})
+	if err != nil {
+		return Page[Group]{}, err
+	}
+	out := make([]Group, len(resp.GetGroups()))
+	for i, g := range resp.GetGroups() {
+		out[i] = Group{
+			UID:         g.GetUid(),
+			Name:        g.GetName(),
+			Description: g.GetDescription(),
+			CreateTime:  tsTime(g.GetCreateTime()),
+			UpdateTime:  tsTime(g.GetUpdateTime()),
+		}
+	}
+	return Page[Group]{
+		Items:         out,
+		NextPageToken: resp.GetNextPageToken(),
+		TotalCount:    resp.GetTotalCount(),
+	}, nil
+}
+
+func (c *Client) ListIdentities(groupUID string, opts PageOpts) (Page[Identity], error) {
+	ctx := context.Background()
+	req := &iamv2.ListIdentitiesRequest{
+		PageSize:  opts.size(),
+		PageToken: opts.PageToken,
+		OrderBy:   opts.OrderBy,
+	}
 	if groupUID != "" {
-		filter.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
+		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
 	}
-	resp, err := c.platform.IAM().IdentityProviders().List(ctx, filter)
+	resp, err := c.v2.IAM().IdentitiesService().ListIdentities(ctx, req)
 	if err != nil {
-		return nil, err
+		return Page[Identity]{}, err
 	}
-	out := make([]IdentityProvider, len(resp.Items))
-	for i, v := range resp.Items {
-		out[i] = IdentityProvider{UID: v.GetId(), Name: v.GetName(), Description: v.GetDescription()}
+	out := make([]Identity, len(resp.GetIdentities()))
+	for i, v := range resp.GetIdentities() {
+		out[i] = Identity{
+			UID:         v.GetUid(),
+			Name:        v.GetName(),
+			Description: v.GetDescription(),
+			CreateTime:  tsTime(v.GetCreateTime()),
+			UpdateTime:  tsTime(v.GetUpdateTime()),
+		}
 	}
-	return out, nil
+	return Page[Identity]{
+		Items:         out,
+		NextPageToken: resp.GetNextPageToken(),
+		TotalCount:    resp.GetTotalCount(),
+	}, nil
 }
 
-func (c *Client) ListGroupInvites(groupUID string) ([]GroupInvite, error) {
+func (c *Client) ListRoles(groupUID string, opts PageOpts) (Page[Role], error) {
 	ctx := context.Background()
-	resp, err := c.platform.IAM().GroupInvites().List(ctx, &iamv1.GroupInviteFilter{Group: groupUID})
-	if err != nil {
-		return nil, err
+	req := &iamv2.ListRolesRequest{
+		PageSize:  opts.size(),
+		PageToken: opts.PageToken,
+		OrderBy:   opts.OrderBy,
 	}
-	out := make([]GroupInvite, len(resp.Items))
-	for i, v := range resp.Items {
-		roleUID := ""
-		if v.GetRole() != nil {
-			roleUID = v.GetRole().GetId()
+	if groupUID != "" {
+		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
+	}
+	resp, err := c.v2.IAM().RolesService().ListRoles(ctx, req)
+	if err != nil {
+		return Page[Role]{}, err
+	}
+	out := make([]Role, len(resp.GetRoles()))
+	for i, v := range resp.GetRoles() {
+		caps := make([]string, len(v.GetCapabilities()))
+		for j, cap := range v.GetCapabilities() {
+			caps[j] = cap.String()
 		}
-		var expirationTime, createTime time.Time
-		if v.GetExpiration() != nil {
-			expirationTime = v.GetExpiration().AsTime()
+		out[i] = Role{
+			UID:          v.GetUid(),
+			Name:         v.GetName(),
+			Description:  v.GetDescription(),
+			Capabilities: caps,
+			CreateTime:   tsTime(v.GetCreateTime()),
+			UpdateTime:   tsTime(v.GetUpdateTime()),
 		}
-		if v.GetCreatedAt() != nil {
-			createTime = v.GetCreatedAt().AsTime()
+	}
+	return Page[Role]{
+		Items:         out,
+		NextPageToken: resp.GetNextPageToken(),
+		TotalCount:    resp.GetTotalCount(),
+	}, nil
+}
+
+func (c *Client) ListRoleBindings(groupUID string, opts PageOpts) (Page[RoleBinding], error) {
+	ctx := context.Background()
+	req := &iamv2.ListRoleBindingsRequest{
+		PageSize:  opts.size(),
+		PageToken: opts.PageToken,
+		OrderBy:   opts.OrderBy,
+	}
+	if groupUID != "" {
+		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
+	}
+	resp, err := c.v2.IAM().RoleBindingsService().ListRoleBindings(ctx, req)
+	if err != nil {
+		return Page[RoleBinding]{}, err
+	}
+	out := make([]RoleBinding, len(resp.GetRoleBindings()))
+	for i, v := range resp.GetRoleBindings() {
+		out[i] = RoleBinding{
+			UID:         v.GetUid(),
+			IdentityUID: v.GetIdentityUid(),
+			RoleUID:     v.GetRoleUid(),
+			CreateTime:  tsTime(v.GetCreateTime()),
+		}
+	}
+	return Page[RoleBinding]{
+		Items:         out,
+		NextPageToken: resp.GetNextPageToken(),
+		TotalCount:    resp.GetTotalCount(),
+	}, nil
+}
+
+func (c *Client) ListIdentityProviders(groupUID string, opts PageOpts) (Page[IdentityProvider], error) {
+	ctx := context.Background()
+	req := &iamv2.ListIdentityProvidersRequest{
+		PageSize:  opts.size(),
+		PageToken: opts.PageToken,
+		OrderBy:   opts.OrderBy,
+	}
+	if groupUID != "" {
+		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
+	}
+	resp, err := c.v2.IAM().IdentityProvidersService().ListIdentityProviders(ctx, req)
+	if err != nil {
+		return Page[IdentityProvider]{}, err
+	}
+	out := make([]IdentityProvider, len(resp.GetIdentityProviders()))
+	for i, v := range resp.GetIdentityProviders() {
+		out[i] = IdentityProvider{
+			UID:         v.GetUid(),
+			Name:        v.GetName(),
+			Description: v.GetDescription(),
+			CreateTime:  tsTime(v.GetCreateTime()),
+			UpdateTime:  tsTime(v.GetUpdateTime()),
+		}
+	}
+	return Page[IdentityProvider]{
+		Items:         out,
+		NextPageToken: resp.GetNextPageToken(),
+		TotalCount:    resp.GetTotalCount(),
+	}, nil
+}
+
+func (c *Client) ListGroupInvites(groupUID string, opts PageOpts) (Page[GroupInvite], error) {
+	ctx := context.Background()
+	req := &iamv2.ListGroupInvitesRequest{
+		PageSize:  opts.size(),
+		PageToken: opts.PageToken,
+		OrderBy:   opts.OrderBy,
+	}
+	if groupUID != "" {
+		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
+	}
+	resp, err := c.v2.IAM().GroupInvitesService().ListGroupInvites(ctx, req)
+	if err != nil {
+		return Page[GroupInvite]{}, err
+	}
+	out := make([]GroupInvite, len(resp.GetGroupInvites()))
+	for i, v := range resp.GetGroupInvites() {
+		roleUID := v.GetRoleUid()
+		if roleUID == "" && v.GetRole() != nil {
+			roleUID = v.GetRole().GetUid()
 		}
 		out[i] = GroupInvite{
-			UID:            v.GetId(),
+			UID:            v.GetUid(),
 			Email:          v.GetEmail(),
 			RoleUID:        roleUID,
-			ExpirationTime: expirationTime,
-			CreateTime:     createTime,
+			ExpirationTime: tsTime(v.GetExpirationTime()),
+			CreateTime:     tsTime(v.GetCreateTime()),
 		}
 	}
-	return out, nil
+	return Page[GroupInvite]{
+		Items:         out,
+		NextPageToken: resp.GetNextPageToken(),
+		TotalCount:    resp.GetTotalCount(),
+	}, nil
 }
 
-func (c *Client) ListAccountAssociations(groupUID string) ([]AccountAssociation, error) {
+func (c *Client) ListAccountAssociations(groupUID string, opts PageOpts) (Page[AccountAssociation], error) {
 	ctx := context.Background()
-	filter := &iamv1.AccountAssociationsFilter{}
+	req := &iamv2.ListAccountAssociationsRequest{
+		PageSize:  opts.size(),
+		PageToken: opts.PageToken,
+		OrderBy:   opts.OrderBy,
+	}
 	if groupUID != "" {
-		filter.Group = groupUID
+		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
 	}
-	resp, err := c.platform.IAM().AccountAssociations().List(ctx, filter)
+	resp, err := c.v2.IAM().AccountAssociationsService().ListAccountAssociations(ctx, req)
 	if err != nil {
-		return nil, err
+		return Page[AccountAssociation]{}, err
 	}
-	out := make([]AccountAssociation, len(resp.Items))
-	for i, v := range resp.Items {
+	out := make([]AccountAssociation, len(resp.GetAccountAssociations()))
+	for i, v := range resp.GetAccountAssociations() {
 		aa := AccountAssociation{
-			UID:         v.GetGroup(),
+			UID:         v.GetUid(),
 			Name:        v.GetName(),
 			Description: v.GetDescription(),
 		}
@@ -210,62 +306,90 @@ func (c *Client) ListAccountAssociations(groupUID string) ([]AccountAssociation,
 			aa.Chainguard = &AccountAssociationChainguard{ServiceBindings: cg.GetServiceBindings()}
 		}
 		if gh := v.GetGithub(); gh != nil {
-			appID := strconv.FormatInt(gh.GetAppId(), 10)
-			aa.GitHub = &AccountAssociationGitHub{
-				AppInstallations: map[string]AccountAssociationGitHubAppInstallations{
-					appID: {
-						Installations: []AccountAssociationGitHubInstallation{
-							{
-								InstallationID: strconv.FormatInt(gh.GetInstallationId(), 10),
-								Name:           gh.GetName(),
-							},
-						},
-					},
-				},
+			installs := make(map[string]AccountAssociationGitHubAppInstallations, len(gh.GetAppInstallations()))
+			for appID, set := range gh.GetAppInstallations() {
+				entries := make([]AccountAssociationGitHubInstallation, 0, len(set.GetInstallations()))
+				for _, inst := range set.GetInstallations() {
+					entries = append(entries, AccountAssociationGitHubInstallation{
+						InstallationID: strconv.FormatInt(inst.GetInstallationId(), 10),
+						Name:           inst.GetName(),
+					})
+				}
+				installs[strconv.FormatInt(appID, 10)] = AccountAssociationGitHubAppInstallations{
+					Installations: entries,
+				}
 			}
+			aa.GitHub = &AccountAssociationGitHub{AppInstallations: installs}
 		}
 		out[i] = aa
 	}
-	return out, nil
+	return Page[AccountAssociation]{
+		Items:         out,
+		NextPageToken: resp.GetNextPageToken(),
+		TotalCount:    resp.GetTotalCount(),
+	}, nil
 }
 
-func (c *Client) ListRepos(groupUID string) ([]Repo, error) {
+func (c *Client) ListRepos(groupUID string, opts PageOpts) (Page[Repo], error) {
 	ctx := context.Background()
-	filter := &registryv1.RepoFilter{}
+	req := &registryv2.ListReposRequest{
+		PageSize:  opts.size(),
+		PageToken: opts.PageToken,
+		OrderBy:   opts.OrderBy,
+	}
 	if groupUID != "" {
-		filter.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
+		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
 	}
-	resp, err := c.platform.Registry().Registry().ListRepos(ctx, filter)
+	resp, err := c.v2.Registry().ReposService().ListRepos(ctx, req)
 	if err != nil {
-		return nil, err
+		return Page[Repo]{}, err
 	}
-	out := make([]Repo, len(resp.Items))
-	for i, v := range resp.Items {
-		out[i] = Repo{UID: v.GetId(), Name: v.GetName()}
-	}
-	return out, nil
-}
-
-func (c *Client) ListTags(repoUID string) ([]Tag, error) {
-	ctx := context.Background()
-	filter := &registryv1.TagFilter{
-		Uidp: &commonv1.UIDPFilter{ChildrenOf: repoUID},
-	}
-	resp, err := c.platform.Registry().Registry().ListTags(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]Tag, len(resp.Items))
-	for i, v := range resp.Items {
-		var updateTime time.Time
-		if v.GetLastUpdated() != nil {
-			updateTime = v.GetLastUpdated().AsTime()
+	out := make([]Repo, len(resp.GetRepos()))
+	for i, v := range resp.GetRepos() {
+		out[i] = Repo{
+			UID:         v.GetUid(),
+			Name:        v.GetName(),
+			Description: v.GetDescription(),
+			CreateTime:  tsTime(v.GetCreateTime()),
+			UpdateTime:  tsTime(v.GetUpdateTime()),
 		}
-		out[i] = Tag{UID: v.GetId(), Name: v.GetName(), Digest: v.GetDigest(), UpdateTime: updateTime}
 	}
-	return out, nil
+	return Page[Repo]{
+		Items:         out,
+		NextPageToken: resp.GetNextPageToken(),
+		TotalCount:    resp.GetTotalCount(),
+	}, nil
 }
 
+func (c *Client) ListTags(repoUID string, opts PageOpts) (Page[Tag], error) {
+	ctx := context.Background()
+	resp, err := c.v2.Registry().TagsService().ListTags(ctx, &registryv2.ListTagsRequest{
+		Uidp:      &commonv1.UIDPFilter{ChildrenOf: repoUID},
+		PageSize:  opts.size(),
+		PageToken: opts.PageToken,
+		OrderBy:   opts.OrderBy,
+	})
+	if err != nil {
+		return Page[Tag]{}, err
+	}
+	out := make([]Tag, len(resp.GetTags()))
+	for i, v := range resp.GetTags() {
+		out[i] = Tag{
+			UID:        v.GetUid(),
+			Name:       v.GetName(),
+			Digest:     v.GetDigest(),
+			UpdateTime: tsTime(v.GetUpdateTime()),
+		}
+	}
+	return Page[Tag]{
+		Items:         out,
+		NextPageToken: resp.GetNextPageToken(),
+		TotalCount:    resp.GetTotalCount(),
+	}, nil
+}
+
+// GetTagSBOM fetches SBOM packages for a tag digest via the v1 registry API
+// (not a cursor-paginated list resource).
 func (c *Client) GetTagSBOM(repoUID, digest string) ([]SBOMPackage, error) {
 	ctx := context.Background()
 
@@ -297,23 +421,49 @@ func (c *Client) GetTagSBOM(repoUID, digest string) ([]SBOMPackage, error) {
 	return out, nil
 }
 
-func (c *Client) ListAdvisories(groupUID string) ([]Advisory, error) {
+func (c *Client) ListAdvisories(groupUID string, opts PageOpts) (Page[Advisory], error) {
 	ctx := context.Background()
-	// The gRPC advisory API is document-centric (one Document per package,
-	// containing multiple Advisory entries). Flatten into our Advisory type.
-	// Group filtering is not supported by the SDK's DocumentFilter.
-	resp, err := c.platform.Advisory().SecurityAdvisory().ListDocuments(ctx, &advisoryv1.DocumentFilter{})
-	if err != nil {
-		return nil, err
+	// The advisories List RPC returns Internal on page 2 when page_size is
+	// >= ~40 (verified against console-api). Cap well below that.
+	const maxAdvisoryPage int32 = 25
+	pageSize := opts.size()
+	if pageSize > maxAdvisoryPage {
+		pageSize = maxAdvisoryPage
 	}
-	var out []Advisory
-	for _, doc := range resp.Items {
-		for _, adv := range doc.GetAdvisories() {
-			out = append(out, Advisory{
-				UID:     adv.GetId(),
-				Aliases: adv.GetAliases(),
-			})
+	req := &vulnv2.ListAdvisoriesRequest{
+		PageSize:  pageSize,
+		PageToken: opts.PageToken,
+		OrderBy:   opts.OrderBy,
+		Query:     opts.Query,
+	}
+	if groupUID != "" {
+		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
+	}
+	resp, err := c.v2.Vulnerabilities().AdvisoriesService().ListAdvisories(ctx, req)
+	if err != nil {
+		return Page[Advisory]{}, err
+	}
+	out := make([]Advisory, len(resp.GetAdvisories()))
+	for i, v := range resp.GetAdvisories() {
+		out[i] = Advisory{
+			UID:                  v.GetUid(),
+			AdvisoryID:           v.GetAdvisoryId(),
+			LegacyAdvisoryID:     v.GetLegacyAdvisoryId(),
+			Aliases:              v.GetAliases(),
+			ArtifactName:         v.GetArtifactName(),
+			ArtifactType:         v.GetArtifactType(),
+			ArtifactArchitecture: v.GetArtifactArchitecture(),
+			ComponentName:        v.GetComponentName(),
+			ComponentLocation:    v.GetComponentLocation(),
+			ComponentType:        v.GetComponentType(),
+			Author:               v.GetAuthor(),
+			CreateTime:           tsTime(v.GetCreateTime()),
+			UpdateTime:           tsTime(v.GetUpdateTime()),
 		}
 	}
-	return out, nil
+	return Page[Advisory]{
+		Items:         out,
+		NextPageToken: resp.GetNextPageToken(),
+		TotalCount:    resp.GetTotalCount(),
+	}, nil
 }

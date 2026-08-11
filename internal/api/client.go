@@ -8,13 +8,18 @@ import (
 	"strings"
 
 	cgauth "chainguard.dev/sdk/auth"
+	v2beta1 "chainguard.dev/sdk/proto/chainguard/platform/clients/v2beta1"
 	"chainguard.dev/sdk/proto/platform"
 )
 
-const apiBase = "https://console-api.enforce.dev"
+const (
+	apiBase   = "https://console-api.enforce.dev"
+	userAgent = "chaintui"
+)
 
 type Client struct {
-	platform platform.Clients
+	v2       v2beta1.Clients
+	platform platform.Clients // v1 — SBOM / manifest metadata only
 	token    string
 	subject  string
 	email    string
@@ -57,12 +62,21 @@ func Login() (*Client, error) {
 func newClient(token string) (*Client, error) {
 	ctx := context.Background()
 	cred := cgauth.NewFromToken(ctx, token, false)
+
+	v2, err := v2beta1.NewClients(ctx, apiBase, userAgent, cred)
+	if err != nil {
+		return nil, fmt.Errorf("create v2beta1 clients: %w", err)
+	}
+
 	p, err := platform.NewPlatformClients(ctx, apiBase, cred)
 	if err != nil {
+		_ = v2.Close()
 		return nil, fmt.Errorf("create platform clients: %w", err)
 	}
+
 	sub, email := parseToken(token)
 	return &Client{
+		v2:       v2,
 		platform: p,
 		token:    token,
 		subject:  sub,

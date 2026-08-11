@@ -288,6 +288,8 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 		keyHint("o", "sort"),
 		keyHint("d", "describe"),
 		keyHint("r", "refresh"),
+		keyHint("[", "prev page"),
+		keyHint("]", "next page"),
 	}
 	if resource == "groups" || resource == "group" || resource == "repos" || resource == "tags" {
 		hints = append(hints, keyHint("↵", "drill down"))

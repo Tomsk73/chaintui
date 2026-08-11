@@ -20,9 +20,18 @@ type RowData struct {
 	Raw     any      // original typed value, marshalled for detail view
 }
 
-// LoadedMsg carries freshly fetched rows to the list page.
+// PageResult is one page of rows from a loadFn (API or local).
+type PageResult struct {
+	Rows          []RowData
+	NextPageToken string
+	TotalCount    int64 // 0 if unknown
+}
+
+// LoadedMsg carries a freshly fetched page to the list page.
 type LoadedMsg struct {
-	Rows []RowData
+	PageResult
+	// RequestToken is the page token that was used for this fetch ("" = first page).
+	RequestToken string
 }
 
 // ListPage is the generic resource list view used for every resource type.
@@ -32,7 +41,7 @@ type ListPage struct {
 	label    string // breadcrumb display name for this page
 
 	cols    []table.Column
-	allRows []RowData // unfiltered
+	allRows []RowData // current API page (unfiltered)
 	table   table.Model
 
 	loading bool
@@ -43,6 +52,10 @@ type ListPage struct {
 	filterIn   textinput.Model
 	filter     string
 
+	// serverFilter, when true, reloads from the API with Query=filter
+	// instead of filtering the current page locally (advisories).
+	serverFilter bool
+
 	saveMode bool
 	saveIn   textinput.Model
 	saveMsg  string
@@ -52,23 +65,29 @@ type ListPage struct {
 	sortCol  int // -1 = unsorted
 	sortAsc  bool
 
-	pageSize     int
-	pageIdx      int
-	totalRows    int      // count after filter+sort, before pagination
-	displayedRows []RowData // rows on the current page (for selectedRow lookup)
-	filteredRows  []RowData // all filtered+sorted rows (for save)
+	pageSize int
+
+	// API cursor pagination state.
+	pageToken     string   // token used for the current page ("" = first)
+	nextPageToken string   // token for the next page (empty = last)
+	prevTokens    []string // stack of tokens for prior pages
+	pageNum       int      // 1-based display page number
+	totalCount    int64
+
+	displayedRows []RowData // rows after local filter+sort (for selectedRow / save)
+	filteredRows  []RowData // alias of displayedRows for save compatibility
 
 	width  int
 	height int
 
-	loadFn  func() ([]RowData, error) // fetches rows from API
-	enterFn func(RowData) tea.Cmd     // emits a Cmd on Enter (nil = no action)
+	loadFn  func(pageToken string, pageSize int, query string) (PageResult, error)
+	enterFn func(RowData) tea.Cmd // emits a Cmd on Enter (nil = no action)
 }
 
 func newListPage(
 	resource, groupCtx string,
 	cols []table.Column,
-	loadFn func() ([]RowData, error),
+	loadFn func(pageToken string, pageSize int, query string) (PageResult, error),
 	enterFn func(RowData) tea.Cmd,
 ) *ListPage {
 	fi := textinput.New()
@@ -101,6 +120,7 @@ func newListPage(
 		sortCol:  -1,
 		sortAsc:  true,
 		pageSize: 50,
+		pageNum:  1,
 	}
 }
 
@@ -122,6 +142,13 @@ func (p *ListPage) WithPageSize(n int) *ListPage {
 	if n > 0 {
 		p.pageSize = n
 	}
+	return p
+}
+
+// WithServerFilter causes "/" filter submits to re-fetch with query instead of
+// filtering the current page locally.
+func (p *ListPage) WithServerFilter() *ListPage {
+	p.serverFilter = true
 	return p
 }
 
@@ -156,17 +183,30 @@ func (p *ListPage) SetSize(w, h int) {
 }
 
 func (p *ListPage) Init() tea.Cmd {
-	return tea.Batch(p.spinner.Tick, p.doLoad())
+	return tea.Batch(p.spinner.Tick, p.doLoad(""))
 }
 
-func (p *ListPage) doLoad() tea.Cmd {
+func (p *ListPage) resetPagination() {
+	p.pageToken = ""
+	p.nextPageToken = ""
+	p.prevTokens = nil
+	p.pageNum = 1
+	p.totalCount = 0
+}
+
+func (p *ListPage) doLoad(token string) tea.Cmd {
 	fn := p.loadFn
+	pageSize := p.pageSize
+	query := ""
+	if p.serverFilter {
+		query = p.filter
+	}
 	return func() tea.Msg {
-		rows, err := fn()
+		res, err := fn(token, pageSize, query)
 		if err != nil {
 			return errMsg{err}
 		}
-		return LoadedMsg{rows}
+		return LoadedMsg{PageResult: res, RequestToken: token}
 	}
 }
 
@@ -174,6 +214,9 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case LoadedMsg:
 		p.loading = false
+		p.pageToken = msg.RequestToken
+		p.nextPageToken = msg.NextPageToken
+		p.totalCount = msg.TotalCount
 		p.allRows = msg.Rows
 		p.applyFilter()
 		return p, nil
@@ -205,10 +248,11 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			p.loading = true
 			p.err = nil
-			return p, tea.Batch(p.spinner.Tick, p.doLoad())
+			p.resetPagination()
+			return p, tea.Batch(p.spinner.Tick, p.doLoad(""))
 		case "/":
 			p.filterMode = true
-			p.filterIn.SetValue("")
+			p.filterIn.SetValue(p.filter)
 			p.filterIn.Focus()
 			return p, textinput.Blink
 		case "s":
@@ -225,17 +269,28 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return p, nil
 		case "[":
-			if p.pageIdx > 0 {
-				p.pageIdx--
-				p.applyFilter()
+			if p.loading || len(p.prevTokens) == 0 {
+				return p, nil
 			}
-			return p, nil
+			prev := p.prevTokens[len(p.prevTokens)-1]
+			p.prevTokens = p.prevTokens[:len(p.prevTokens)-1]
+			p.pageNum--
+			if p.pageNum < 1 {
+				p.pageNum = 1
+			}
+			p.loading = true
+			p.err = nil
+			return p, tea.Batch(p.spinner.Tick, p.doLoad(prev))
 		case "]":
-			if p.pageIdx < p.totalPages()-1 {
-				p.pageIdx++
-				p.applyFilter()
+			if p.loading || p.nextPageToken == "" {
+				return p, nil
 			}
-			return p, nil
+			p.prevTokens = append(p.prevTokens, p.pageToken)
+			p.pageNum++
+			token := p.nextPageToken
+			p.loading = true
+			p.err = nil
+			return p, tea.Batch(p.spinner.Tick, p.doLoad(token))
 		case "d":
 			if row, ok := p.selectedRow(); ok {
 				return p, func() tea.Msg { return PushMsg{P: newDetailPage(p.resource, row)} }
@@ -256,17 +311,29 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (p *ListPage) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "enter":
+	case "esc":
+		p.filterMode = false
+		p.filterIn.Blur()
+		return p, nil
+	case "enter":
 		p.filterMode = false
 		p.filterIn.Blur()
 		p.filter = p.filterIn.Value()
+		if p.serverFilter {
+			p.loading = true
+			p.err = nil
+			p.resetPagination()
+			return p, tea.Batch(p.spinner.Tick, p.doLoad(""))
+		}
 		p.applyFilter()
 		return p, nil
 	}
 	var cmd tea.Cmd
 	p.filterIn, cmd = p.filterIn.Update(msg)
-	p.filter = p.filterIn.Value()
-	p.applyFilter()
+	if !p.serverFilter {
+		p.filter = p.filterIn.Value()
+		p.applyFilter()
+	}
 	return p, cmd
 }
 
@@ -295,14 +362,6 @@ func (p *ListPage) updateSave(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return p, cmd
 }
 
-func (p *ListPage) totalPages() int {
-	if p.pageSize <= 0 || p.totalRows == 0 {
-		return 1
-	}
-	pages := (p.totalRows + p.pageSize - 1) / p.pageSize
-	return pages
-}
-
 func (p *ListPage) updateSort(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "o":
@@ -329,9 +388,13 @@ func (p *ListPage) updateSort(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (p *ListPage) applyFilter() {
 	f := strings.ToLower(p.filter)
 	var filtered []RowData
-	for _, rd := range p.allRows {
-		if f == "" || p.rowMatches(rd, f) {
-			filtered = append(filtered, rd)
+	if p.serverFilter || f == "" {
+		filtered = append([]RowData(nil), p.allRows...)
+	} else {
+		for _, rd := range p.allRows {
+			if p.rowMatches(rd, f) {
+				filtered = append(filtered, rd)
+			}
 		}
 	}
 	if p.sortCol >= 0 && p.sortCol < len(p.cols) {
@@ -344,22 +407,7 @@ func (p *ListPage) applyFilter() {
 		})
 	}
 	p.filteredRows = filtered
-	p.totalRows = len(filtered)
-
-	// Clamp page index after any filter/sort change.
-	if tp := p.totalPages(); p.pageIdx >= tp {
-		p.pageIdx = tp - 1
-	}
-	if p.pageIdx < 0 {
-		p.pageIdx = 0
-	}
-
-	start := p.pageIdx * p.pageSize
-	end := start + p.pageSize
-	if end > len(filtered) {
-		end = len(filtered)
-	}
-	p.displayedRows = filtered[start:end]
+	p.displayedRows = filtered
 
 	rows := make([]table.Row, len(p.displayedRows))
 	for i, rd := range p.displayedRows {
@@ -390,6 +438,10 @@ func (p *ListPage) selectedRow() (RowData, bool) {
 	return RowData{}, false
 }
 
+func (p *ListPage) hasMorePages() bool {
+	return p.nextPageToken != "" || len(p.prevTokens) > 0
+}
+
 func (p *ListPage) View() string {
 	if p.loading {
 		return p.spinner.View() + " Loading " + p.resource + "..."
@@ -413,7 +465,11 @@ func (p *ListPage) View() string {
 		}
 		bottom = cmdBarStyle.Render("sort by: " + strings.Join(parts, "  "))
 	case p.filterMode:
-		bottom = cmdBarStyle.Render("/ " + p.filterIn.View())
+		hint := ""
+		if p.serverFilter {
+			hint = " (server)"
+		}
+		bottom = cmdBarStyle.Render("/ " + p.filterIn.View() + hint)
 	default:
 		var parts []string
 		if p.sortCol >= 0 {
@@ -426,8 +482,15 @@ func (p *ListPage) View() string {
 		if p.filter != "" {
 			parts = append(parts, fmt.Sprintf("filter: %q", p.filter))
 		}
-		if p.totalPages() > 1 {
-			parts = append(parts, fmt.Sprintf("page %d/%d  [ ]", p.pageIdx+1, p.totalPages()))
+		if p.hasMorePages() || p.pageNum > 1 || p.totalCount > 0 {
+			pageInfo := fmt.Sprintf("page %d", p.pageNum)
+			if p.totalCount > 0 {
+				pageInfo += fmt.Sprintf("/%d", (p.totalCount+int64(p.pageSize)-1)/int64(p.pageSize))
+			} else if p.nextPageToken != "" {
+				pageInfo += "+"
+			}
+			pageInfo += "  [ ]"
+			parts = append(parts, pageInfo)
 		}
 		if len(parts) > 0 {
 			bottom = dimStyle.Render(strings.Join(parts, "  │  "))
@@ -465,9 +528,9 @@ func newDetailPage(resource string, row RowData) *detailPage {
 
 func (d *detailPage) ResourceType() string { return d.resource }
 func (d *detailPage) GroupContext() string  { return "" }
-func (d *detailPage) Label() string        { return d.resource }
-func (d *detailPage) SetSize(w, h int)     { d.width = w; d.height = h }
-func (d *detailPage) Init() tea.Cmd        { return nil }
+func (d *detailPage) Label() string         { return d.resource }
+func (d *detailPage) SetSize(w, h int)      { d.width = w; d.height = h }
+func (d *detailPage) Init() tea.Cmd         { return nil }
 
 func (d *detailPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(tea.KeyMsg); ok {

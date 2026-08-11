@@ -6,4 +6,4 @@ Usage is pretty limited as yet and it relies on chainctl for auth.  Once you're 
 
 You can save a CSV of the SBOM too.
 
-Haven't added pagination support yet, so Advisories times out trying to download all the CG Advisories.
+Lists use Chainguard API v2beta1 cursor pagination. Use `[` / `]` to move between API pages. Advisories `/` filter is sent to the server as a query; other resources filter the current page locally.

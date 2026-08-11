@@ -47,6 +47,26 @@ func pushPage(p Page) tea.Cmd {
 	return func() tea.Msg { return PushMsg{P: p} }
 }
 
+func pageOpts(token string, pageSize int, query string) api.PageOpts {
+	return api.PageOpts{
+		PageSize:  int32(pageSize),
+		PageToken: token,
+		Query:     query,
+	}
+}
+
+func toPageResult[T any](page api.Page[T], mapRow func(T) RowData) PageResult {
+	rows := make([]RowData, len(page.Items))
+	for i, item := range page.Items {
+		rows[i] = mapRow(item)
+	}
+	return PageResult{
+		Rows:          rows,
+		NextPageToken: page.NextPageToken,
+		TotalCount:    page.TotalCount,
+	}
+}
+
 // --- Org selector ---
 
 // NewOrgSelectorPage lists the organisations the current user belongs to.
@@ -58,20 +78,18 @@ func NewOrgSelectorPage(client *api.Client) *ListPage {
 		{Title: "DESCRIPTION", Width: 30},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func() ([]RowData, error) {
-		orgs, err := client.ListMyOrganizations()
+	load := func(token string, pageSize int, _ string) (PageResult, error) {
+		page, err := client.ListMyOrganizations(pageOpts(token, pageSize, ""))
 		if err != nil {
-			return nil, err
+			return PageResult{}, err
 		}
-		rows := make([]RowData, len(orgs))
-		for i, g := range orgs {
-			rows[i] = RowData{
+		return toPageResult(page, func(g api.Group) RowData {
+			return RowData{
 				UID:     g.UID,
 				Columns: []string{g.Name, shortUID(g.UID), g.Description, relativeTime(g.CreateTime)},
 				Raw:     g,
 			}
-		}
-		return rows, nil
+		}), nil
 	}
 	enter := func(row RowData) tea.Cmd {
 		return func() tea.Msg { return SelectOrgMsg{UID: row.UID, Name: row.Columns[0]} }
@@ -88,20 +106,18 @@ func NewGroupsPage(client *api.Client, parentUID string) *ListPage {
 		{Title: "DESCRIPTION", Width: 30},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func() ([]RowData, error) {
-		groups, err := client.ListGroups(parentUID)
+	load := func(token string, pageSize int, _ string) (PageResult, error) {
+		page, err := client.ListGroups(parentUID, pageOpts(token, pageSize, ""))
 		if err != nil {
-			return nil, err
+			return PageResult{}, err
 		}
-		rows := make([]RowData, len(groups))
-		for i, g := range groups {
-			rows[i] = RowData{
+		return toPageResult(page, func(g api.Group) RowData {
+			return RowData{
 				UID:     g.UID,
 				Columns: []string{g.Name, shortUID(g.UID), g.Description, relativeTime(g.CreateTime)},
 				Raw:     g,
 			}
-		}
-		return rows, nil
+		}), nil
 	}
 	enter := func(row RowData) tea.Cmd {
 		return pushPage(NewGroupResourcesPage(client, row.UID, row.Columns[0]))
@@ -148,7 +164,7 @@ func NewGroupResourcesPage(client *api.Client, groupUID, groupName string) *List
 		}},
 	}
 
-	load := func() ([]RowData, error) {
+	load := func(string, int, string) (PageResult, error) {
 		rows := make([]RowData, len(entries))
 		for i, e := range entries {
 			rows[i] = RowData{
@@ -157,7 +173,7 @@ func NewGroupResourcesPage(client *api.Client, groupUID, groupName string) *List
 				Raw:     e.make,
 			}
 		}
-		return rows, nil
+		return PageResult{Rows: rows}, nil
 	}
 	enter := func(row RowData) tea.Cmd {
 		makePage, ok := row.Raw.(func() Page)
@@ -178,20 +194,18 @@ func NewIdentitiesPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "DESCRIPTION", Width: 30},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func() ([]RowData, error) {
-		items, err := client.ListIdentities(groupUID)
+	load := func(token string, pageSize int, _ string) (PageResult, error) {
+		page, err := client.ListIdentities(groupUID, pageOpts(token, pageSize, ""))
 		if err != nil {
-			return nil, err
+			return PageResult{}, err
 		}
-		rows := make([]RowData, len(items))
-		for i, v := range items {
-			rows[i] = RowData{
+		return toPageResult(page, func(v api.Identity) RowData {
+			return RowData{
 				UID:     v.UID,
 				Columns: []string{v.Name, shortUID(v.UID), v.Description, relativeTime(v.CreateTime)},
 				Raw:     v,
 			}
-		}
-		return rows, nil
+		}), nil
 	}
 	return newListPage("identities", groupUID, cols, load, nil)
 }
@@ -204,24 +218,22 @@ func NewRolesPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "CAPABILITIES", Width: 40},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func() ([]RowData, error) {
-		items, err := client.ListRoles(groupUID)
+	load := func(token string, pageSize int, _ string) (PageResult, error) {
+		page, err := client.ListRoles(groupUID, pageOpts(token, pageSize, ""))
 		if err != nil {
-			return nil, err
+			return PageResult{}, err
 		}
-		rows := make([]RowData, len(items))
-		for i, v := range items {
+		return toPageResult(page, func(v api.Role) RowData {
 			caps := strings.Join(v.Capabilities, ", ")
 			if len(caps) > 38 {
 				caps = caps[:35] + "..."
 			}
-			rows[i] = RowData{
+			return RowData{
 				UID:     v.UID,
 				Columns: []string{v.Name, caps, relativeTime(v.CreateTime)},
 				Raw:     v,
 			}
-		}
-		return rows, nil
+		}), nil
 	}
 	return newListPage("roles", groupUID, cols, load, nil)
 }
@@ -235,20 +247,18 @@ func NewRoleBindingsPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "ROLE", Width: 30},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func() ([]RowData, error) {
-		items, err := client.ListRoleBindings(groupUID)
+	load := func(token string, pageSize int, _ string) (PageResult, error) {
+		page, err := client.ListRoleBindings(groupUID, pageOpts(token, pageSize, ""))
 		if err != nil {
-			return nil, err
+			return PageResult{}, err
 		}
-		rows := make([]RowData, len(items))
-		for i, v := range items {
-			rows[i] = RowData{
+		return toPageResult(page, func(v api.RoleBinding) RowData {
+			return RowData{
 				UID:     v.UID,
 				Columns: []string{shortUID(v.UID), shortUID(v.IdentityUID), shortUID(v.RoleUID), relativeTime(v.CreateTime)},
 				Raw:     v,
 			}
-		}
-		return rows, nil
+		}), nil
 	}
 	return newListPage("rolebindings", groupUID, cols, load, nil)
 }
@@ -262,20 +272,18 @@ func NewIDPsPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "DESCRIPTION", Width: 30},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func() ([]RowData, error) {
-		items, err := client.ListIdentityProviders(groupUID)
+	load := func(token string, pageSize int, _ string) (PageResult, error) {
+		page, err := client.ListIdentityProviders(groupUID, pageOpts(token, pageSize, ""))
 		if err != nil {
-			return nil, err
+			return PageResult{}, err
 		}
-		rows := make([]RowData, len(items))
-		for i, v := range items {
-			rows[i] = RowData{
+		return toPageResult(page, func(v api.IdentityProvider) RowData {
+			return RowData{
 				UID:     v.UID,
 				Columns: []string{v.Name, shortUID(v.UID), v.Description, relativeTime(v.CreateTime)},
 				Raw:     v,
 			}
-		}
-		return rows, nil
+		}), nil
 	}
 	return newListPage("identityproviders", groupUID, cols, load, nil)
 }
@@ -289,20 +297,18 @@ func NewGroupInvitesPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "EXPIRES", Width: 14},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func() ([]RowData, error) {
-		items, err := client.ListGroupInvites(groupUID)
+	load := func(token string, pageSize int, _ string) (PageResult, error) {
+		page, err := client.ListGroupInvites(groupUID, pageOpts(token, pageSize, ""))
 		if err != nil {
-			return nil, err
+			return PageResult{}, err
 		}
-		rows := make([]RowData, len(items))
-		for i, v := range items {
-			rows[i] = RowData{
+		return toPageResult(page, func(v api.GroupInvite) RowData {
+			return RowData{
 				UID:     v.UID,
 				Columns: []string{v.Email, shortUID(v.RoleUID), relativeTime(v.ExpirationTime), relativeTime(v.CreateTime)},
 				Raw:     v,
 			}
-		}
-		return rows, nil
+		}), nil
 	}
 	return newListPage("groupinvites", groupUID, cols, load, nil)
 }
@@ -315,20 +321,18 @@ func NewReposPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "DESCRIPTION", Width: 30},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func() ([]RowData, error) {
-		items, err := client.ListRepos(groupUID)
+	load := func(token string, pageSize int, _ string) (PageResult, error) {
+		page, err := client.ListRepos(groupUID, pageOpts(token, pageSize, ""))
 		if err != nil {
-			return nil, err
+			return PageResult{}, err
 		}
-		rows := make([]RowData, len(items))
-		for i, v := range items {
-			rows[i] = RowData{
+		return toPageResult(page, func(v api.Repo) RowData {
+			return RowData{
 				UID:     v.UID,
 				Columns: []string{v.Name, v.Description, relativeTime(v.CreateTime)},
 				Raw:     v,
 			}
-		}
-		return rows, nil
+		}), nil
 	}
 	enter := func(row RowData) tea.Cmd {
 		return pushPage(NewTagsPage(client, row.UID).WithLabel(row.Columns[0]))
@@ -344,24 +348,22 @@ func NewTagsPage(client *api.Client, repoUID string) *ListPage {
 		{Title: "DIGEST", Width: 40},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func() ([]RowData, error) {
-		items, err := client.ListTags(repoUID)
+	load := func(token string, pageSize int, _ string) (PageResult, error) {
+		page, err := client.ListTags(repoUID, pageOpts(token, pageSize, ""))
 		if err != nil {
-			return nil, err
+			return PageResult{}, err
 		}
-		rows := make([]RowData, len(items))
-		for i, v := range items {
+		return toPageResult(page, func(v api.Tag) RowData {
 			digest := v.Digest
 			if len(digest) > 19 {
 				digest = digest[:7] + "..." + digest[len(digest)-9:]
 			}
-			rows[i] = RowData{
+			return RowData{
 				UID:     v.UID,
 				Columns: []string{v.Name, digest, relativeTime(v.UpdateTime)},
 				Raw:     v,
 			}
-		}
-		return rows, nil
+		}), nil
 	}
 	enter := func(row RowData) tea.Cmd {
 		tag, ok := row.Raw.(api.Tag)
@@ -381,10 +383,10 @@ func NewSBOMPage(client *api.Client, repoUID, tagName, digest string) *ListPage 
 		{Title: "VERSION", Width: 25},
 		{Title: "PURL", Width: 50},
 	}
-	load := func() ([]RowData, error) {
+	load := func(string, int, string) (PageResult, error) {
 		pkgs, err := client.GetTagSBOM(repoUID, digest)
 		if err != nil {
-			return nil, err
+			return PageResult{}, err
 		}
 		rows := make([]RowData, len(pkgs))
 		for i, p := range pkgs {
@@ -394,7 +396,7 @@ func NewSBOMPage(client *api.Client, repoUID, tagName, digest string) *ListPage 
 				Raw:     p,
 			}
 		}
-		return rows, nil
+		return PageResult{Rows: rows}, nil
 	}
 	save := func(filename string, rows []RowData) error {
 		f, err := os.Create(filename)
@@ -426,25 +428,23 @@ func NewAdvisoriesPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "ALIASES", Width: 40},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func() ([]RowData, error) {
-		items, err := client.ListAdvisories(groupUID)
+	load := func(token string, pageSize int, query string) (PageResult, error) {
+		page, err := client.ListAdvisories(groupUID, pageOpts(token, pageSize, query))
 		if err != nil {
-			return nil, err
+			return PageResult{}, err
 		}
-		rows := make([]RowData, len(items))
-		for i, v := range items {
+		return toPageResult(page, func(v api.Advisory) RowData {
 			id := v.AdvisoryID
 			if id == "" {
 				id = v.UID
 			}
 			aliases := strings.Join(v.Aliases, ", ")
-			rows[i] = RowData{
+			return RowData{
 				UID:     v.UID,
 				Columns: []string{id, v.ArtifactName, aliases, relativeTime(v.CreateTime)},
 				Raw:     v,
 			}
-		}
-		return rows, nil
+		}), nil
 	}
-	return newListPage("advisories", groupUID, cols, load, nil)
+	return newListPage("advisories", groupUID, cols, load, nil).WithServerFilter().WithPageSize(25)
 }
