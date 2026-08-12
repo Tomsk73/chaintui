@@ -53,8 +53,15 @@ type ListPage struct {
 	filter     string
 
 	// serverFilter, when true, reloads from the API with Query=filter
-	// instead of filtering the current page locally (advisories).
+	// instead of filtering the current page locally.
 	serverFilter bool
+	// serverFilterHint is shown next to the filter prompt (e.g. "server", "name").
+	serverFilterHint string
+
+	// serverSortFields maps column index → API order_by field name.
+	// When the user sorts a mapped column, we re-fetch with OrderBy and skip
+	// local sorting for that column.
+	serverSortFields map[int]string
 
 	saveMode bool
 	saveIn   textinput.Model
@@ -80,14 +87,14 @@ type ListPage struct {
 	width  int
 	height int
 
-	loadFn  func(pageToken string, pageSize int, query string) (PageResult, error)
+	loadFn  func(pageToken string, pageSize int, query, orderBy string) (PageResult, error)
 	enterFn func(RowData) tea.Cmd // emits a Cmd on Enter (nil = no action)
 }
 
 func newListPage(
 	resource, groupCtx string,
 	cols []table.Column,
-	loadFn func(pageToken string, pageSize int, query string) (PageResult, error),
+	loadFn func(pageToken string, pageSize int, query, orderBy string) (PageResult, error),
 	enterFn func(RowData) tea.Cmd,
 ) *ListPage {
 	fi := textinput.New()
@@ -146,9 +153,27 @@ func (p *ListPage) WithPageSize(n int) *ListPage {
 }
 
 // WithServerFilter causes "/" filter submits to re-fetch with query instead of
-// filtering the current page locally.
+// filtering the current page locally (free-text Query, e.g. advisories).
 func (p *ListPage) WithServerFilter() *ListPage {
 	p.serverFilter = true
+	p.serverFilterHint = "server"
+	p.filterIn.Placeholder = "query..."
+	return p
+}
+
+// WithServerNameFilter is like WithServerFilter but for exact-name List RPCs
+// (repos, tags, identities, groups, roles).
+func (p *ListPage) WithServerNameFilter() *ListPage {
+	p.serverFilter = true
+	p.serverFilterHint = "exact name"
+	p.filterIn.Placeholder = "exact name..."
+	return p
+}
+
+// WithServerSort maps table column indices to API order_by field names
+// (e.g. 0 → "name"). Sorting a mapped column reloads from the API.
+func (p *ListPage) WithServerSort(fields map[int]string) *ListPage {
+	p.serverSortFields = fields
 	return p
 }
 
@@ -194,6 +219,29 @@ func (p *ListPage) resetPagination() {
 	p.totalCount = 0
 }
 
+func (p *ListPage) orderByArg() string {
+	if p.sortCol < 0 || p.serverSortFields == nil {
+		return ""
+	}
+	field, ok := p.serverSortFields[p.sortCol]
+	if !ok || field == "" {
+		return ""
+	}
+	dir := "asc"
+	if !p.sortAsc {
+		dir = "desc"
+	}
+	return field + " " + dir
+}
+
+func (p *ListPage) usesServerSort() bool {
+	if p.sortCol < 0 || p.serverSortFields == nil {
+		return false
+	}
+	_, ok := p.serverSortFields[p.sortCol]
+	return ok
+}
+
 func (p *ListPage) doLoad(token string) tea.Cmd {
 	fn := p.loadFn
 	pageSize := p.pageSize
@@ -201,8 +249,9 @@ func (p *ListPage) doLoad(token string) tea.Cmd {
 	if p.serverFilter {
 		query = p.filter
 	}
+	orderBy := p.orderByArg()
 	return func() tea.Msg {
-		res, err := fn(token, pageSize, query)
+		res, err := fn(token, pageSize, query, orderBy)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -379,6 +428,12 @@ func (p *ListPage) updateSort(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				p.sortAsc = true
 			}
 			p.sortMode = false
+			if p.usesServerSort() {
+				p.loading = true
+				p.err = nil
+				p.resetPagination()
+				return p, tea.Batch(p.spinner.Tick, p.doLoad(""))
+			}
 			p.applyFilter()
 		}
 	}
@@ -397,7 +452,7 @@ func (p *ListPage) applyFilter() {
 			}
 		}
 	}
-	if p.sortCol >= 0 && p.sortCol < len(p.cols) {
+	if !p.usesServerSort() && p.sortCol >= 0 && p.sortCol < len(p.cols) {
 		col, asc := p.sortCol, p.sortAsc
 		sort.SliceStable(filtered, func(i, j int) bool {
 			if asc {
@@ -467,7 +522,11 @@ func (p *ListPage) View() string {
 	case p.filterMode:
 		hint := ""
 		if p.serverFilter {
-			hint = " (server)"
+			if p.serverFilterHint != "" {
+				hint = " (" + p.serverFilterHint + ")"
+			} else {
+				hint = " (server)"
+			}
 		}
 		bottom = cmdBarStyle.Render("/ " + p.filterIn.View() + hint)
 	default:
@@ -477,7 +536,11 @@ func (p *ListPage) View() string {
 			if !p.sortAsc {
 				dir = "▼"
 			}
-			parts = append(parts, fmt.Sprintf("sorted by %s %s", p.cols[p.sortCol].Title, dir))
+			label := fmt.Sprintf("sorted by %s %s", p.cols[p.sortCol].Title, dir)
+			if p.usesServerSort() {
+				label += " (server)"
+			}
+			parts = append(parts, label)
 		}
 		if p.filter != "" {
 			parts = append(parts, fmt.Sprintf("filter: %q", p.filter))

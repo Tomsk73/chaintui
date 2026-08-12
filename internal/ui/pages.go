@@ -47,11 +47,12 @@ func pushPage(p Page) tea.Cmd {
 	return func() tea.Msg { return PushMsg{P: p} }
 }
 
-func pageOpts(token string, pageSize int, query string) api.PageOpts {
+func pageOpts(token string, pageSize int, query, orderBy string) api.PageOpts {
 	return api.PageOpts{
 		PageSize:  int32(pageSize),
 		PageToken: token,
 		Query:     query,
+		OrderBy:   orderBy,
 	}
 }
 
@@ -78,8 +79,8 @@ func NewOrgSelectorPage(client *api.Client) *ListPage {
 		{Title: "DESCRIPTION", Width: 30},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func(token string, pageSize int, _ string) (PageResult, error) {
-		page, err := client.ListMyOrganizations(pageOpts(token, pageSize, ""))
+	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
+		page, err := client.ListMyOrganizations(pageOpts(token, pageSize, query, orderBy))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -94,7 +95,9 @@ func NewOrgSelectorPage(client *api.Client) *ListPage {
 	enter := func(row RowData) tea.Cmd {
 		return func() tea.Msg { return SelectOrgMsg{UID: row.UID, Name: row.Columns[0]} }
 	}
-	return newListPage("organizations", "", cols, load, enter)
+	return newListPage("organizations", "", cols, load, enter).
+		WithServerNameFilter().
+		WithServerSort(map[int]string{0: "name", 1: "uid", 3: "create_time"})
 }
 
 // --- Groups ---
@@ -106,8 +109,8 @@ func NewGroupsPage(client *api.Client, parentUID string) *ListPage {
 		{Title: "DESCRIPTION", Width: 30},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func(token string, pageSize int, _ string) (PageResult, error) {
-		page, err := client.ListGroups(parentUID, pageOpts(token, pageSize, ""))
+	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
+		page, err := client.ListGroups(parentUID, pageOpts(token, pageSize, query, orderBy))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -122,7 +125,9 @@ func NewGroupsPage(client *api.Client, parentUID string) *ListPage {
 	enter := func(row RowData) tea.Cmd {
 		return pushPage(NewGroupResourcesPage(client, row.UID, row.Columns[0]))
 	}
-	return newListPage("groups", parentUID, cols, load, enter)
+	return newListPage("groups", parentUID, cols, load, enter).
+		WithServerNameFilter().
+		WithServerSort(map[int]string{0: "name", 1: "uid", 3: "create_time"})
 }
 
 // --- Group resource selector ---
@@ -164,7 +169,7 @@ func NewGroupResourcesPage(client *api.Client, groupUID, groupName string) *List
 		}},
 	}
 
-	load := func(string, int, string) (PageResult, error) {
+	load := func(string, int, string, string) (PageResult, error) {
 		rows := make([]RowData, len(entries))
 		for i, e := range entries {
 			rows[i] = RowData{
@@ -194,8 +199,8 @@ func NewIdentitiesPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "DESCRIPTION", Width: 30},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func(token string, pageSize int, _ string) (PageResult, error) {
-		page, err := client.ListIdentities(groupUID, pageOpts(token, pageSize, ""))
+	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
+		page, err := client.ListIdentities(groupUID, pageOpts(token, pageSize, query, orderBy))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -207,7 +212,9 @@ func NewIdentitiesPage(client *api.Client, groupUID string) *ListPage {
 			}
 		}), nil
 	}
-	return newListPage("identities", groupUID, cols, load, nil)
+	return newListPage("identities", groupUID, cols, load, nil).
+		WithServerNameFilter().
+		WithServerSort(map[int]string{0: "name", 1: "uid", 3: "create_time"})
 }
 
 // --- Roles ---
@@ -218,8 +225,8 @@ func NewRolesPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "CAPABILITIES", Width: 40},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func(token string, pageSize int, _ string) (PageResult, error) {
-		page, err := client.ListRoles(groupUID, pageOpts(token, pageSize, ""))
+	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
+		page, err := client.ListRoles(groupUID, pageOpts(token, pageSize, query, orderBy))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -235,7 +242,9 @@ func NewRolesPage(client *api.Client, groupUID string) *ListPage {
 			}
 		}), nil
 	}
-	return newListPage("roles", groupUID, cols, load, nil)
+	return newListPage("roles", groupUID, cols, load, nil).
+		WithServerNameFilter().
+		WithServerSort(map[int]string{0: "name", 2: "create_time"})
 }
 
 // --- RoleBindings ---
@@ -247,8 +256,8 @@ func NewRoleBindingsPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "ROLE", Width: 30},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func(token string, pageSize int, _ string) (PageResult, error) {
-		page, err := client.ListRoleBindings(groupUID, pageOpts(token, pageSize, ""))
+	load := func(token string, pageSize int, _, orderBy string) (PageResult, error) {
+		page, err := client.ListRoleBindings(groupUID, pageOpts(token, pageSize, "", orderBy))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -260,7 +269,8 @@ func NewRoleBindingsPage(client *api.Client, groupUID string) *ListPage {
 			}
 		}), nil
 	}
-	return newListPage("rolebindings", groupUID, cols, load, nil)
+	return newListPage("rolebindings", groupUID, cols, load, nil).
+		WithServerSort(map[int]string{0: "uid", 3: "create_time"})
 }
 
 // --- IdentityProviders ---
@@ -272,8 +282,8 @@ func NewIDPsPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "DESCRIPTION", Width: 30},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func(token string, pageSize int, _ string) (PageResult, error) {
-		page, err := client.ListIdentityProviders(groupUID, pageOpts(token, pageSize, ""))
+	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
+		page, err := client.ListIdentityProviders(groupUID, pageOpts(token, pageSize, query, orderBy))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -285,7 +295,9 @@ func NewIDPsPage(client *api.Client, groupUID string) *ListPage {
 			}
 		}), nil
 	}
-	return newListPage("identityproviders", groupUID, cols, load, nil)
+	return newListPage("identityproviders", groupUID, cols, load, nil).
+		WithServerNameFilter().
+		WithServerSort(map[int]string{0: "name", 1: "uid", 3: "create_time"})
 }
 
 // --- GroupInvites ---
@@ -297,8 +309,8 @@ func NewGroupInvitesPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "EXPIRES", Width: 14},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func(token string, pageSize int, _ string) (PageResult, error) {
-		page, err := client.ListGroupInvites(groupUID, pageOpts(token, pageSize, ""))
+	load := func(token string, pageSize int, _, orderBy string) (PageResult, error) {
+		page, err := client.ListGroupInvites(groupUID, pageOpts(token, pageSize, "", orderBy))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -310,7 +322,8 @@ func NewGroupInvitesPage(client *api.Client, groupUID string) *ListPage {
 			}
 		}), nil
 	}
-	return newListPage("groupinvites", groupUID, cols, load, nil)
+	return newListPage("groupinvites", groupUID, cols, load, nil).
+		WithServerSort(map[int]string{3: "created_at"})
 }
 
 // --- Repos ---
@@ -321,8 +334,8 @@ func NewReposPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "DESCRIPTION", Width: 30},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func(token string, pageSize int, _ string) (PageResult, error) {
-		page, err := client.ListRepos(groupUID, pageOpts(token, pageSize, ""))
+	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
+		page, err := client.ListRepos(groupUID, pageOpts(token, pageSize, query, orderBy))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -337,7 +350,9 @@ func NewReposPage(client *api.Client, groupUID string) *ListPage {
 	enter := func(row RowData) tea.Cmd {
 		return pushPage(NewTagsPage(client, row.UID).WithLabel(row.Columns[0]))
 	}
-	return newListPage("repos", groupUID, cols, load, enter)
+	return newListPage("repos", groupUID, cols, load, enter).
+		WithServerNameFilter().
+		WithServerSort(map[int]string{0: "name", 2: "create_time"})
 }
 
 // --- Tags ---
@@ -348,8 +363,8 @@ func NewTagsPage(client *api.Client, repoUID string) *ListPage {
 		{Title: "DIGEST", Width: 40},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func(token string, pageSize int, _ string) (PageResult, error) {
-		page, err := client.ListTags(repoUID, pageOpts(token, pageSize, ""))
+	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
+		page, err := client.ListTags(repoUID, pageOpts(token, pageSize, query, orderBy))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -372,7 +387,9 @@ func NewTagsPage(client *api.Client, repoUID string) *ListPage {
 		}
 		return pushPage(NewSBOMPage(client, repoUID, tag.Name, tag.Digest).WithLabel(tag.Name + " sbom"))
 	}
-	return newListPage("tags", repoUID, cols, load, enter)
+	return newListPage("tags", repoUID, cols, load, enter).
+		WithServerNameFilter().
+		WithServerSort(map[int]string{0: "name", 2: "update_time"})
 }
 
 // --- SBOM ---
@@ -383,7 +400,7 @@ func NewSBOMPage(client *api.Client, repoUID, tagName, digest string) *ListPage 
 		{Title: "VERSION", Width: 25},
 		{Title: "PURL", Width: 50},
 	}
-	load := func(string, int, string) (PageResult, error) {
+	load := func(string, int, string, string) (PageResult, error) {
 		pkgs, err := client.GetTagSBOM(repoUID, digest)
 		if err != nil {
 			return PageResult{}, err
@@ -428,8 +445,8 @@ func NewAdvisoriesPage(client *api.Client, groupUID string) *ListPage {
 		{Title: "ALIASES", Width: 40},
 		{Title: "CREATED", Width: 14},
 	}
-	load := func(token string, pageSize int, query string) (PageResult, error) {
-		page, err := client.ListAdvisories(groupUID, pageOpts(token, pageSize, query))
+	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
+		page, err := client.ListAdvisories(groupUID, pageOpts(token, pageSize, query, orderBy))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -446,5 +463,8 @@ func NewAdvisoriesPage(client *api.Client, groupUID string) *ListPage {
 			}
 		}), nil
 	}
-	return newListPage("advisories", groupUID, cols, load, nil).WithServerFilter().WithPageSize(25)
+	return newListPage("advisories", groupUID, cols, load, nil).
+		WithServerFilter().
+		WithServerSort(map[int]string{0: "advisory_id", 1: "artifact_name", 3: "create_time"}).
+		WithPageSize(25)
 }

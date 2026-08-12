@@ -35,11 +35,23 @@ func parsePURL(purl string) (name, version string) {
 	return
 }
 
-func uidpFilter(groupUID string) *commonv1.UIDPFilter {
-	if groupUID != "" {
-		return &commonv1.UIDPFilter{ChildrenOf: groupUID}
+// uidpChildren scopes to direct children only — used for group hierarchy
+// navigation (folders one level down) and tags under a repo.
+func uidpChildren(parentUID string) *commonv1.UIDPFilter {
+	if parentUID != "" {
+		return &commonv1.UIDPFilter{ChildrenOf: parentUID}
 	}
 	return &commonv1.UIDPFilter{InRoot: true}
+}
+
+// uidpScope includes the whole subtree under a group (org/folder). Resource
+// lists like repos and IAM objects often live in nested groups, so
+// descendants_of matches how the console and chainctl typically scope orgs.
+func uidpScope(groupUID string) *commonv1.UIDPFilter {
+	if groupUID == "" {
+		return nil
+	}
+	return &commonv1.UIDPFilter{DescendantsOf: groupUID}
 }
 
 func tsTime(ts *timestamppb.Timestamp) time.Time {
@@ -47,6 +59,12 @@ func tsTime(ts *timestamppb.Timestamp) time.Time {
 		return time.Time{}
 	}
 	return ts.AsTime()
+}
+
+// exactName returns opts.Query trimmed, or "" when unset. Used for List RPCs
+// that filter by exact resource name rather than free-text query.
+func exactName(opts PageOpts) string {
+	return strings.TrimSpace(opts.Query)
 }
 
 // ListMyOrganizations returns one page of root-level groups (orgs) the current
@@ -57,6 +75,7 @@ func (c *Client) ListMyOrganizations(opts PageOpts) (Page[Group], error) {
 		PageSize:  opts.size(),
 		PageToken: opts.PageToken,
 		OrderBy:   opts.OrderBy,
+		Name:      exactName(opts),
 	}
 	if sub := c.Subject(); sub != "" {
 		req.Uidp = &commonv1.UIDPFilter{AncestorsOf: sub}
@@ -87,10 +106,11 @@ func (c *Client) ListMyOrganizations(opts PageOpts) (Page[Group], error) {
 func (c *Client) ListGroups(parentUID string, opts PageOpts) (Page[Group], error) {
 	ctx := context.Background()
 	resp, err := c.v2.IAM().GroupsService().ListGroups(ctx, &iamv2.ListGroupsRequest{
-		Uidp:      uidpFilter(parentUID),
+		Uidp:      uidpChildren(parentUID),
 		PageSize:  opts.size(),
 		PageToken: opts.PageToken,
 		OrderBy:   opts.OrderBy,
+		Name:      exactName(opts),
 	})
 	if err != nil {
 		return Page[Group]{}, err
@@ -118,10 +138,9 @@ func (c *Client) ListIdentities(groupUID string, opts PageOpts) (Page[Identity],
 		PageSize:  opts.size(),
 		PageToken: opts.PageToken,
 		OrderBy:   opts.OrderBy,
+		Name:      exactName(opts),
 	}
-	if groupUID != "" {
-		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
-	}
+	req.Uidp = uidpScope(groupUID)
 	resp, err := c.v2.IAM().IdentitiesService().ListIdentities(ctx, req)
 	if err != nil {
 		return Page[Identity]{}, err
@@ -149,10 +168,9 @@ func (c *Client) ListRoles(groupUID string, opts PageOpts) (Page[Role], error) {
 		PageSize:  opts.size(),
 		PageToken: opts.PageToken,
 		OrderBy:   opts.OrderBy,
+		Name:      exactName(opts),
 	}
-	if groupUID != "" {
-		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
-	}
+	req.Uidp = uidpScope(groupUID)
 	resp, err := c.v2.IAM().RolesService().ListRoles(ctx, req)
 	if err != nil {
 		return Page[Role]{}, err
@@ -186,9 +204,7 @@ func (c *Client) ListRoleBindings(groupUID string, opts PageOpts) (Page[RoleBind
 		PageToken: opts.PageToken,
 		OrderBy:   opts.OrderBy,
 	}
-	if groupUID != "" {
-		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
-	}
+	req.Uidp = uidpScope(groupUID)
 	resp, err := c.v2.IAM().RoleBindingsService().ListRoleBindings(ctx, req)
 	if err != nil {
 		return Page[RoleBinding]{}, err
@@ -215,10 +231,9 @@ func (c *Client) ListIdentityProviders(groupUID string, opts PageOpts) (Page[Ide
 		PageSize:  opts.size(),
 		PageToken: opts.PageToken,
 		OrderBy:   opts.OrderBy,
+		Name:      exactName(opts),
 	}
-	if groupUID != "" {
-		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
-	}
+	req.Uidp = uidpScope(groupUID)
 	resp, err := c.v2.IAM().IdentityProvidersService().ListIdentityProviders(ctx, req)
 	if err != nil {
 		return Page[IdentityProvider]{}, err
@@ -247,9 +262,7 @@ func (c *Client) ListGroupInvites(groupUID string, opts PageOpts) (Page[GroupInv
 		PageToken: opts.PageToken,
 		OrderBy:   opts.OrderBy,
 	}
-	if groupUID != "" {
-		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
-	}
+	req.Uidp = uidpScope(groupUID)
 	resp, err := c.v2.IAM().GroupInvitesService().ListGroupInvites(ctx, req)
 	if err != nil {
 		return Page[GroupInvite]{}, err
@@ -282,9 +295,7 @@ func (c *Client) ListAccountAssociations(groupUID string, opts PageOpts) (Page[A
 		PageToken: opts.PageToken,
 		OrderBy:   opts.OrderBy,
 	}
-	if groupUID != "" {
-		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
-	}
+	req.Uidp = uidpScope(groupUID)
 	resp, err := c.v2.IAM().AccountAssociationsService().ListAccountAssociations(ctx, req)
 	if err != nil {
 		return Page[AccountAssociation]{}, err
@@ -340,9 +351,10 @@ func (c *Client) ListRepos(groupUID string, opts PageOpts) (Page[Repo], error) {
 		PageToken: opts.PageToken,
 		OrderBy:   opts.OrderBy,
 	}
-	if groupUID != "" {
-		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
+	if name := exactName(opts); name != "" {
+		req.Name = &name
 	}
+	req.Uidp = uidpScope(groupUID)
 	resp, err := c.v2.Registry().ReposService().ListRepos(ctx, req)
 	if err != nil {
 		return Page[Repo]{}, err
@@ -371,6 +383,7 @@ func (c *Client) ListTags(repoUID string, opts PageOpts) (Page[Tag], error) {
 		PageSize:  opts.size(),
 		PageToken: opts.PageToken,
 		OrderBy:   opts.OrderBy,
+		Name:      exactName(opts),
 	})
 	if err != nil {
 		return Page[Tag]{}, err
@@ -462,9 +475,7 @@ func (c *Client) listAdvisoriesRaw(ctx context.Context, groupUID string, opts Pa
 		OrderBy:  opts.OrderBy,
 		Query:    opts.Query,
 	}
-	if groupUID != "" {
-		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
-	}
+	req.Uidp = uidpScope(groupUID)
 	return c.v2.Vulnerabilities().AdvisoriesService().ListAdvisories(ctx, req)
 }
 

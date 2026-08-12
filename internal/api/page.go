@@ -4,8 +4,9 @@ package api
 type PageOpts struct {
 	PageSize  int32
 	PageToken string
-	OrderBy   string
-	// Query is free-text search where the API supports it (e.g. advisories).
+	OrderBy string
+	// Query is a server-side filter string. Advisories treat it as free-text
+	// search; list RPCs with a Name field treat it as an exact name match.
 	Query string
 }
 

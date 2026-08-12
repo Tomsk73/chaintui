@@ -6,4 +6,4 @@ Usage is pretty limited as yet and it relies on chainctl for auth (or `CHAINGUAR
 
 You can save a CSV of the SBOM too.
 
-Lists use Chainguard API v2beta1 cursor pagination. Use `[` / `]` to move between API pages. Advisories `/` filter is sent to the server as a query; other resources filter the current page locally.
+Lists use Chainguard API v2beta1 cursor pagination. Use `[` / `]` to move between API pages. `/` filter: advisories use free-text server query; repos/tags/identities/groups/roles use exact name. `o` sort uses server `order_by` for mapped columns (name, create_time, …); other columns stay local to the current page.
