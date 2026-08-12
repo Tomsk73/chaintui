@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,7 +33,7 @@ func (c *Client) Subject() string { return c.subject }
 func (c *Client) Email() string { return c.email }
 
 // NewClient resolves a token from the environment or chainctl's token cache.
-// Returns an error (with ErrNotLoggedIn) if no cached token exists.
+// Returns an error matching ErrNotLoggedIn if no cached token exists.
 func NewClient() (*Client, error) {
 	token, err := cachedToken()
 	if err != nil {
@@ -45,18 +46,27 @@ func NewClient() (*Client, error) {
 // then returns a ready Client using the freshly issued token.
 // Call this only before the TUI has taken over the terminal.
 func Login() (*Client, error) {
+	if _, err := exec.LookPath("chainctl"); err != nil {
+		return nil, fmt.Errorf("%w: chainctl not found in PATH (install the Chainguard CLI or set CHAINGUARD_TOKEN)", ErrNotLoggedIn)
+	}
+	fmt.Fprintln(os.Stderr, "Starting chainctl auth login...")
 	cmd := exec.Command("chainctl", "auth", "login")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("chainctl auth login: %w", err)
+		return nil, fmt.Errorf("chainctl auth login failed: %w", err)
 	}
 	token, err := cachedToken()
 	if err != nil {
-		return nil, fmt.Errorf("fetch token after login: %w", err)
+		return nil, fmt.Errorf("no token available after login: %w", err)
 	}
 	return newClient(token)
+}
+
+// IsNotLoggedIn reports whether err indicates missing Chainguard credentials.
+func IsNotLoggedIn(err error) bool {
+	return errors.Is(err, ErrNotLoggedIn)
 }
 
 func newClient(token string) (*Client, error) {
@@ -89,13 +99,16 @@ func cachedToken() (string, error) {
 	if t := os.Getenv("CHAINGUARD_TOKEN"); t != "" {
 		return t, nil
 	}
+	if _, err := exec.LookPath("chainctl"); err != nil {
+		return "", fmt.Errorf("%w: chainctl not found in PATH (install the Chainguard CLI or set CHAINGUARD_TOKEN)", ErrNotLoggedIn)
+	}
 	out, err := exec.Command("chainctl", "auth", "token").Output()
 	if err != nil {
-		return "", ErrNotLoggedIn
+		return "", fmt.Errorf("%w: no chainctl token cache (run chainctl auth login)", ErrNotLoggedIn)
 	}
 	t := strings.TrimSpace(string(out))
 	if t == "" {
-		return "", ErrNotLoggedIn
+		return "", fmt.Errorf("%w: empty chainctl token (run chainctl auth login)", ErrNotLoggedIn)
 	}
 	return t, nil
 }
@@ -119,4 +132,4 @@ func parseToken(token string) (subject, email string) {
 }
 
 // ErrNotLoggedIn is returned when no valid token can be found.
-var ErrNotLoggedIn = fmt.Errorf("not logged in (run chainctl auth login, or set CHAINGUARD_TOKEN)")
+var ErrNotLoggedIn = fmt.Errorf("not logged in to Chainguard")
