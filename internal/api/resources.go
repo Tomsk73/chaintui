@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +12,8 @@ import (
 	vulnv2 "chainguard.dev/sdk/proto/chainguard/platform/vulnerabilities/v2beta1"
 	commonv1 "chainguard.dev/sdk/proto/platform/common/v1"
 	registryv1 "chainguard.dev/sdk/proto/platform/registry/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -421,49 +424,156 @@ func (c *Client) GetTagSBOM(repoUID, digest string) ([]SBOMPackage, error) {
 	return out, nil
 }
 
-func (c *Client) ListAdvisories(groupUID string, opts PageOpts) (Page[Advisory], error) {
-	ctx := context.Background()
-	// The advisories List RPC returns Internal on page 2 when page_size is
-	// >= ~40 (verified against console-api). Cap well below that.
-	const maxAdvisoryPage int32 = 25
-	pageSize := opts.size()
-	if pageSize > maxAdvisoryPage {
-		pageSize = maxAdvisoryPage
+func mapAdvisory(v *vulnv2.Advisory) Advisory {
+	return Advisory{
+		UID:                  v.GetUid(),
+		AdvisoryID:           v.GetAdvisoryId(),
+		LegacyAdvisoryID:     v.GetLegacyAdvisoryId(),
+		Aliases:              v.GetAliases(),
+		ArtifactName:         v.GetArtifactName(),
+		ArtifactType:         v.GetArtifactType(),
+		ArtifactArchitecture: v.GetArtifactArchitecture(),
+		ComponentName:        v.GetComponentName(),
+		ComponentLocation:    v.GetComponentLocation(),
+		ComponentType:        v.GetComponentType(),
+		Author:               v.GetAuthor(),
+		CreateTime:           tsTime(v.GetCreateTime()),
+		UpdateTime:           tsTime(v.GetUpdateTime()),
 	}
+}
+
+func parseAdvisorySkip(token string) (int32, error) {
+	if token == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(token, 10, 32)
+	if err != nil || n < 0 {
+		// Opaque API page tokens are not used for advisories (they break on
+		// certain records). Ask the UI to refresh from the start.
+		return 0, fmt.Errorf("stale advisory page token; press r to refresh")
+	}
+	return int32(n), nil
+}
+
+func (c *Client) listAdvisoriesRaw(ctx context.Context, groupUID string, opts PageOpts, pageSize, skip int32) (*vulnv2.ListAdvisoriesResponse, error) {
 	req := &vulnv2.ListAdvisoriesRequest{
-		PageSize:  pageSize,
-		PageToken: opts.PageToken,
-		OrderBy:   opts.OrderBy,
-		Query:     opts.Query,
+		PageSize: pageSize,
+		Skip:     skip,
+		OrderBy:  opts.OrderBy,
+		Query:    opts.Query,
 	}
 	if groupUID != "" {
 		req.Uidp = &commonv1.UIDPFilter{ChildrenOf: groupUID}
 	}
-	resp, err := c.v2.Vulnerabilities().AdvisoriesService().ListAdvisories(ctx, req)
+	return c.v2.Vulnerabilities().AdvisoriesService().ListAdvisories(ctx, req)
+}
+
+// ListAdvisories returns one page of advisories.
+//
+// The console-api ListAdvisories RPC returns Internal for some individual
+// records (observed around offset 66 in the default ordering). Opaque
+// page_token pagination also fails once a window includes such a record.
+// We therefore paginate with Skip, encode the next skip offset in
+// NextPageToken, and step over poison rows one at a time.
+func (c *Client) ListAdvisories(groupUID string, opts PageOpts) (Page[Advisory], error) {
+	ctx := context.Background()
+
+	const (
+		maxAdvisoryPage int32 = 25
+		apiBatch        int32 = 10
+		maxPoisonSkip         = 50
+	)
+	pageSize := opts.size()
+	if pageSize > maxAdvisoryPage {
+		pageSize = maxAdvisoryPage
+	}
+
+	skip, err := parseAdvisorySkip(opts.PageToken)
 	if err != nil {
 		return Page[Advisory]{}, err
 	}
-	out := make([]Advisory, len(resp.GetAdvisories()))
-	for i, v := range resp.GetAdvisories() {
-		out[i] = Advisory{
-			UID:                  v.GetUid(),
-			AdvisoryID:           v.GetAdvisoryId(),
-			LegacyAdvisoryID:     v.GetLegacyAdvisoryId(),
-			Aliases:              v.GetAliases(),
-			ArtifactName:         v.GetArtifactName(),
-			ArtifactType:         v.GetArtifactType(),
-			ArtifactArchitecture: v.GetArtifactArchitecture(),
-			ComponentName:        v.GetComponentName(),
-			ComponentLocation:    v.GetComponentLocation(),
-			ComponentType:        v.GetComponentType(),
-			Author:               v.GetAuthor(),
-			CreateTime:           tsTime(v.GetCreateTime()),
-			UpdateTime:           tsTime(v.GetUpdateTime()),
+
+	out := make([]Advisory, 0, pageSize)
+	cursor := skip
+	var totalCount int64
+	poisonSkips := 0
+
+	for int32(len(out)) < pageSize {
+		batch := pageSize - int32(len(out))
+		if batch > apiBatch {
+			batch = apiBatch
+		}
+
+		resp, err := c.listAdvisoriesRaw(ctx, groupUID, opts, batch, cursor)
+		if err == nil {
+			if resp.GetTotalCount() > 0 {
+				totalCount = resp.GetTotalCount()
+			}
+			items := resp.GetAdvisories()
+			if len(items) == 0 {
+				break // end of list
+			}
+			for _, v := range items {
+				out = append(out, mapAdvisory(v))
+			}
+			cursor += int32(len(items))
+			poisonSkips = 0
+			if int32(len(items)) < batch {
+				break // end of list
+			}
+			continue
+		}
+
+		if status.Code(err) != codes.Internal {
+			return Page[Advisory]{}, err
+		}
+
+		// Batch hit a poison row — walk singles and skip failures.
+		advanced := false
+		for int32(len(out)) < pageSize {
+			one, err := c.listAdvisoriesRaw(ctx, groupUID, opts, 1, cursor)
+			if err != nil {
+				if status.Code(err) != codes.Internal {
+					return Page[Advisory]{}, err
+				}
+				poisonSkips++
+				if poisonSkips > maxPoisonSkip {
+					return Page[Advisory]{}, fmt.Errorf("too many unreadable advisories near offset %d: %w", cursor, err)
+				}
+				cursor++
+				advanced = true
+				continue
+			}
+			if one.GetTotalCount() > 0 {
+				totalCount = one.GetTotalCount()
+			}
+			items := one.GetAdvisories()
+			if len(items) == 0 {
+				return Page[Advisory]{
+					Items:      out,
+					TotalCount: totalCount,
+				}, nil
+			}
+			out = append(out, mapAdvisory(items[0]))
+			cursor++
+			poisonSkips = 0
+			advanced = true
+			// After clearing the poison zone, prefer batching again.
+			break
+		}
+		if !advanced {
+			break
 		}
 	}
+
+	next := ""
+	if int32(len(out)) == pageSize {
+		next = strconv.FormatInt(int64(cursor), 10)
+	}
+
 	return Page[Advisory]{
 		Items:         out,
-		NextPageToken: resp.GetNextPageToken(),
-		TotalCount:    resp.GetTotalCount(),
+		NextPageToken: next,
+		TotalCount:    totalCount,
 	}, nil
 }
