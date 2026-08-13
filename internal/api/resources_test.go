@@ -97,7 +97,14 @@ func TestParseLibraryEcosystem(t *testing.T) {
 		t.Fatalf("pypi: %v %v", py, err)
 	}
 	if _, err := parseLibraryEcosystem("npm"); err == nil {
-		t.Fatal("expected error for npm")
+		// javascript is handled separately via isJavaScriptEcosystem
+		t.Fatal("expected parseLibraryEcosystem error for npm (use isJavaScriptEcosystem)")
+	}
+	if !isJavaScriptEcosystem("javascript") || !isJavaScriptEcosystem("npm") || !isJavaScriptEcosystem("js") {
+		t.Fatal("expected javascript aliases")
+	}
+	if isJavaScriptEcosystem("java") {
+		t.Fatal("java should not be javascript")
 	}
 }
 

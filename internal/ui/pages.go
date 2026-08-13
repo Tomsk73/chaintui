@@ -538,7 +538,7 @@ func NewRootMenuPage(client *api.Client) *ListPage {
 
 // --- Libraries ---
 
-// NewLibrariesEcosystemPage lets the user pick Java or Python before listing artifacts.
+// NewLibrariesEcosystemPage lets the user pick an ecosystem before listing artifacts.
 func NewLibrariesEcosystemPage(client *api.Client) *ListPage {
 	cols := []table.Column{
 		{Title: "ECOSYSTEM", Width: 16},
@@ -550,6 +550,7 @@ func NewLibrariesEcosystemPage(client *api.Client) *ListPage {
 	entries := []entry{
 		{string(api.LibraryEcosystemJava), "java", "Maven / Java packages"},
 		{string(api.LibraryEcosystemPython), "python", "PyPI / Python packages"},
+		{string(api.LibraryEcosystemJavaScript), "javascript", "npm / JavaScript packages"},
 	}
 	load := func(string, int, string, string) (PageResult, error) {
 		rows := make([]RowData, len(entries))
@@ -612,30 +613,34 @@ func NewLibraryArtifactsPage(client *api.Client, ecosystem string) *ListPage {
 		if label == "" {
 			label = art.UID
 		}
-		return pushPage(NewLibraryVersionsPage(client, art.UID, label).WithLabel(label + " versions"))
+		return pushPage(NewLibraryVersionsPage(client, art.UID, label, remediated).WithLabel(label + " versions"))
 	}
-	return newListPage("artifacts", "", cols, load, enter).
+	page := newListPage("artifacts", "", cols, load, enter).
 		WithLabel(ecosystem + " artifacts").
 		WithServerFilter().
-		WithServerSort(map[int]string{
+		WithBoolToggle("m", "remediated", &remediated)
+	// Java/Python support server order_by; npm v1 list does not.
+	if ecosystem != string(api.LibraryEcosystemJavaScript) {
+		page = page.WithServerSort(map[int]string{
 			0: "name",
 			1: "latest_version",
 			2: "version_count",
 			4: "create_time",
 			5: "update_time",
-		}).
-		WithBoolToggle("m", "remediated", &remediated)
+		})
+	}
+	return page
 }
 
 // NewLibraryVersionsPage lists versions for one Libraries artifact.
-func NewLibraryVersionsPage(client *api.Client, artifactID, artifactName string) *ListPage {
+func NewLibraryVersionsPage(client *api.Client, artifactID, artifactName string, remediated bool) *ListPage {
 	cols := []table.Column{
 		{Title: "VERSION", Width: 24},
 		{Title: "SIZE", Width: 12},
 		{Title: "UPDATED", Width: 14},
 	}
 	load := func(token string, pageSize int, _, orderBy string) (PageResult, error) {
-		page, err := client.ListArtifactVersions(artifactID, pageOpts(token, pageSize, "", orderBy))
+		page, err := client.ListArtifactVersions(artifactID, pageOpts(token, pageSize, "", orderBy), remediated)
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -647,7 +652,10 @@ func NewLibraryVersionsPage(client *api.Client, artifactID, artifactName string)
 			}
 		}), nil
 	}
-	return newListPage("versions", "", cols, load, nil).
-		WithLabel(artifactName + " versions").
-		WithServerSort(map[int]string{0: "version", 1: "size_bytes", 2: "update_time"})
+	page := newListPage("versions", "", cols, load, nil).
+		WithLabel(artifactName + " versions")
+	if !strings.HasPrefix(artifactID, "npm:") {
+		page = page.WithServerSort(map[int]string{0: "version", 1: "size_bytes", 2: "update_time"})
+	}
+	return page
 }

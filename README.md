@@ -2,7 +2,7 @@ A TUI in the style of K9S for Chainguard
 
 To use, clone the repo and run make in the project root, then ./chaintui
 
-Usage is pretty limited as yet and it relies on chainctl for auth (or `CHAINGUARD_TOKEN`). If you're not logged in, chaintui will offer to run `chainctl auth login` before starting. The home menu offers **groups** (orgs/folders) and **libraries**. Drill into groups then use a `:` command (e.g. `:repos`) for image repos → tags → SBOMs. Libraries: pick Java or Python → artifacts → versions (`m` toggles remediated-only; `/` searches). Or jump with `:libraries`, `:java`, `:python`.
+Usage is pretty limited as yet and it relies on chainctl for auth (or `CHAINGUARD_TOKEN`). If you're not logged in, chaintui will offer to run `chainctl auth login` before starting. The home menu offers **groups** (orgs/folders) and **libraries**. Drill into groups then use a `:` command (e.g. `:repos`) for image repos → tags → SBOMs. Libraries: pick Java, Python, or JavaScript → artifacts → versions (`m` toggles remediated-only; `/` searches). Or jump with `:libraries`, `:java`, `:python`, `:javascript` / `:npm`.
 
 You can save a CSV of the SBOM too.
 

@@ -263,6 +263,8 @@ func resolveResourcePage(client *api.Client, resource, groupCtx string) Page {
 		return NewLibraryArtifactsPage(client, string(api.LibraryEcosystemJava))
 	case "python", "libraries/python", "lib/python", "pypi":
 		return NewLibraryArtifactsPage(client, string(api.LibraryEcosystemPython))
+	case "javascript", "js", "npm", "node", "libraries/javascript", "lib/javascript", "lib/js", "lib/npm":
+		return NewLibraryArtifactsPage(client, string(api.LibraryEcosystemJavaScript))
 	}
 	return nil
 }
