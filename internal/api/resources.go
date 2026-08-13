@@ -479,21 +479,23 @@ func (c *Client) listAdvisoriesRaw(ctx context.Context, groupUID string, opts Pa
 	return c.v2.Vulnerabilities().AdvisoriesService().ListAdvisories(ctx, req)
 }
 
-// ListAdvisories returns one page of advisories.
+// advisoryFetcher loads a window of advisories starting at skip.
+// Used so collectAdvisoriesPage can be unit-tested without a live API.
+type advisoryFetcher func(pageSize, skip int32) (*vulnv2.ListAdvisoriesResponse, error)
+
+const (
+	maxAdvisoryPage int32 = 25
+	advisoryBatch   int32 = 10
+	maxPoisonSkip         = 50
+)
+
+// collectAdvisoriesPage returns one page of advisories using Skip-based paging.
 //
 // The console-api ListAdvisories RPC returns Internal for some individual
-// records (observed around offset 66 in the default ordering). Opaque
-// page_token pagination also fails once a window includes such a record.
-// We therefore paginate with Skip, encode the next skip offset in
+// records. Opaque page_token pagination also fails once a window includes
+// such a record. We therefore paginate with Skip, encode the next skip in
 // NextPageToken, and step over poison rows one at a time.
-func (c *Client) ListAdvisories(groupUID string, opts PageOpts) (Page[Advisory], error) {
-	ctx := context.Background()
-
-	const (
-		maxAdvisoryPage int32 = 25
-		apiBatch        int32 = 10
-		maxPoisonSkip         = 50
-	)
+func collectAdvisoriesPage(opts PageOpts, fetch advisoryFetcher) (Page[Advisory], error) {
 	pageSize := opts.size()
 	if pageSize > maxAdvisoryPage {
 		pageSize = maxAdvisoryPage
@@ -511,11 +513,11 @@ func (c *Client) ListAdvisories(groupUID string, opts PageOpts) (Page[Advisory],
 
 	for int32(len(out)) < pageSize {
 		batch := pageSize - int32(len(out))
-		if batch > apiBatch {
-			batch = apiBatch
+		if batch > advisoryBatch {
+			batch = advisoryBatch
 		}
 
-		resp, err := c.listAdvisoriesRaw(ctx, groupUID, opts, batch, cursor)
+		resp, err := fetch(batch, cursor)
 		if err == nil {
 			if resp.GetTotalCount() > 0 {
 				totalCount = resp.GetTotalCount()
@@ -542,7 +544,7 @@ func (c *Client) ListAdvisories(groupUID string, opts PageOpts) (Page[Advisory],
 		// Batch hit a poison row — walk singles and skip failures.
 		advanced := false
 		for int32(len(out)) < pageSize {
-			one, err := c.listAdvisoriesRaw(ctx, groupUID, opts, 1, cursor)
+			one, err := fetch(1, cursor)
 			if err != nil {
 				if status.Code(err) != codes.Internal {
 					return Page[Advisory]{}, err
@@ -587,4 +589,12 @@ func (c *Client) ListAdvisories(groupUID string, opts PageOpts) (Page[Advisory],
 		NextPageToken: next,
 		TotalCount:    totalCount,
 	}, nil
+}
+
+// ListAdvisories returns one page of advisories.
+func (c *Client) ListAdvisories(groupUID string, opts PageOpts) (Page[Advisory], error) {
+	ctx := context.Background()
+	return collectAdvisoriesPage(opts, func(pageSize, skip int32) (*vulnv2.ListAdvisoriesResponse, error) {
+		return c.listAdvisoriesRaw(ctx, groupUID, opts, pageSize, skip)
+	})
 }
