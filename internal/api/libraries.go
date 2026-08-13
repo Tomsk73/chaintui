@@ -74,11 +74,44 @@ func npmPackageName(artifactID string) string {
 	return strings.TrimPrefix(strings.TrimSpace(artifactID), npmArtifactPrefix)
 }
 
+func npmSourceLabel(t librariesv1.NpmSourceType) string {
+	switch t {
+	case librariesv1.NpmSourceType_NPM_SOURCE_TYPE_INTERNAL:
+		return "internal"
+	case librariesv1.NpmSourceType_NPM_SOURCE_TYPE_INTERNAL_REMEDIATED:
+		return "remediated"
+	case librariesv1.NpmSourceType_NPM_SOURCE_TYPE_UPSTREAM_REGISTRY:
+		return "upstream"
+	default:
+		return ""
+	}
+}
+
+func artifactSourceLabel(t librariesv1.SourceType) string {
+	switch t {
+	case librariesv1.SourceType_SOURCE_TYPE_INTERNAL:
+		return "internal"
+	case librariesv1.SourceType_SOURCE_TYPE_INTERNAL_REMEDIATED:
+		return "remediated"
+	case librariesv1.SourceType_SOURCE_TYPE_UPSTREAM_REGISTRY:
+		return "upstream"
+	default:
+		return ""
+	}
+}
+
+func isRemediatedSource(label string) bool {
+	return label == "remediated"
+}
+
 // ListArtifacts returns one page of Chainguard Libraries artifacts for an ecosystem.
 // Query is free-text search; remediated restricts to remediated packages when true.
 //
 // Java/Python use libraries v2beta1 ListArtifacts. JavaScript uses platform v1
 // NpmPackages.List (JS is not in the v2beta1 Ecosystem enum yet).
+//
+// License and source type are populated for JavaScript (npm). Java/Python
+// artifact list responses do not include those fields yet.
 func (c *Client) ListArtifacts(ecosystem string, opts PageOpts, remediated bool) (Page[LibraryArtifact], error) {
 	if isJavaScriptEcosystem(ecosystem) {
 		return c.listNpmArtifacts(opts, remediated)
@@ -140,6 +173,8 @@ func (c *Client) listNpmArtifacts(opts PageOpts, remediated bool) (Page[LibraryA
 			Ecosystem:     string(LibraryEcosystemJavaScript),
 			LatestVersion: a.GetLatestVersion(),
 			VersionCount:  int32(a.GetVersionCount()),
+			License:       a.GetLicense(),
+			SourceType:    npmSourceLabel(a.GetSourceType()),
 		}
 	}
 	return Page[LibraryArtifact]{
@@ -150,7 +185,12 @@ func (c *Client) listNpmArtifacts(opts PageOpts, remediated bool) (Page[LibraryA
 }
 
 // ListArtifactVersions returns one page of versions for a Libraries artifact.
-// remediated applies to JavaScript (npm source types); Java/Python ignore it.
+// remediated filters to remediated builds when true (npm source types; Java/Python
+// via platform v1 source_type).
+//
+// Java/Python versions use platform v1 Artifacts.ListVersions so describe can
+// show source type and malware scan fields. JavaScript uses NpmPackages.ListVersions
+// (license, source, malware, provenance).
 func (c *Client) ListArtifactVersions(artifactID string, opts PageOpts, remediated bool) (Page[LibraryArtifactVersion], error) {
 	if strings.TrimSpace(artifactID) == "" {
 		return Page[LibraryArtifactVersion]{}, fmt.Errorf("artifact id is required")
@@ -158,34 +198,43 @@ func (c *Client) ListArtifactVersions(artifactID string, opts PageOpts, remediat
 	if strings.HasPrefix(artifactID, npmArtifactPrefix) {
 		return c.listNpmVersions(npmPackageName(artifactID), opts, remediated)
 	}
+	return c.listJavaPythonVersions(artifactID, opts, remediated)
+}
 
+func (c *Client) listJavaPythonVersions(artifactID string, opts PageOpts, remediated bool) (Page[LibraryArtifactVersion], error) {
 	ctx := context.Background()
-	resp, err := c.libraries.ArtifactsService().ListArtifactVersions(ctx, &librariesv2.ListArtifactVersionsRequest{
-		ArtifactId: artifactID,
-		PageSize:   opts.size(),
-		PageToken:  opts.PageToken,
-		OrderBy:    opts.OrderBy,
+	// v1 returns the full version set (no page token). Prefer it over v2beta1 so
+	// source type and malware fields are available on describe.
+	resp, err := c.platform.Libraries().Artifacts().ListVersions(ctx, &librariesv1.ArtifactVersionFilter{
+		Id: artifactID,
 	})
 	if err != nil {
 		return Page[LibraryArtifactVersion]{}, err
 	}
-	out := make([]LibraryArtifactVersion, len(resp.GetArtifactVersions()))
-	for i, v := range resp.GetArtifactVersions() {
-		out[i] = LibraryArtifactVersion{
-			UID:         v.GetUid(),
-			Name:        v.GetName(),
-			Version:     v.GetVersion(),
-			Description: v.GetDescription(),
-			SizeBytes:   v.GetSizeBytes(),
-			CreateTime:  tsTime(v.GetCreateTime()),
-			UpdateTime:  tsTime(v.GetUpdateTime()),
+	out := make([]LibraryArtifactVersion, 0, len(resp.GetItems()))
+	for _, v := range resp.GetItems() {
+		src := artifactSourceLabel(v.GetSourceType())
+		if remediated && !isRemediatedSource(src) {
+			continue
 		}
+		// Default Chainguard catalog view: skip upstream mirrors.
+		if !remediated && src == "upstream" {
+			continue
+		}
+		out = append(out, LibraryArtifactVersion{
+			UID:              v.GetId(),
+			Name:             v.GetName(),
+			Version:          v.GetVersion(),
+			Description:      v.GetDescription(),
+			SourceType:       src,
+			SizeBytes:        v.GetSizeBytes(),
+			MalwareScanned:   v.GetMalwareScanned(),
+			MalwareMalicious: v.GetMalwareMalicious(),
+			CreateTime:       tsTime(v.GetCreatedAt()),
+			UpdateTime:       tsTime(v.GetUpdatedAt()),
+		})
 	}
-	return Page[LibraryArtifactVersion]{
-		Items:         out,
-		NextPageToken: resp.GetNextPageToken(),
-		TotalCount:    resp.GetTotalCount(),
-	}, nil
+	return pageSlice(out, opts), nil
 }
 
 func (c *Client) listNpmVersions(packageName string, opts PageOpts, remediated bool) (Page[LibraryArtifactVersion], error) {
@@ -202,12 +251,18 @@ func (c *Client) listNpmVersions(packageName string, opts PageOpts, remediated b
 	out := make([]LibraryArtifactVersion, len(resp.GetItems()))
 	for i, v := range resp.GetItems() {
 		out[i] = LibraryArtifactVersion{
-			UID:        fmt.Sprintf("%s%s@%s", npmArtifactPrefix, v.GetPackageName(), v.GetVersion()),
-			Name:       v.GetPackageName(),
-			Version:    v.GetVersion(),
-			SizeBytes:  v.GetFileSize(),
-			CreateTime: tsTime(v.GetCreatedAt()),
-			UpdateTime: tsTime(v.GetUpdatedAt()),
+			UID:              fmt.Sprintf("%s%s@%s", npmArtifactPrefix, v.GetPackageName(), v.GetVersion()),
+			Name:             v.GetPackageName(),
+			Version:          v.GetVersion(),
+			License:          v.GetLicense(),
+			SourceType:       npmSourceLabel(v.GetSourceType()),
+			SizeBytes:        v.GetFileSize(),
+			Provenance:       v.GetProvenancePredicateType(),
+			MalwareScanned:   v.GetMalwareScanned(),
+			MalwareMalicious: v.GetMalwareMalicious(),
+			MalwareScannedAt: tsTime(v.GetMalwareScannedAt()),
+			CreateTime:       tsTime(v.GetCreatedAt()),
+			UpdateTime:       tsTime(v.GetUpdatedAt()),
 		}
 	}
 	return Page[LibraryArtifactVersion]{
@@ -215,4 +270,35 @@ func (c *Client) listNpmVersions(packageName string, opts PageOpts, remediated b
 		NextPageToken: resp.GetNextPageToken(),
 		TotalCount:    resp.GetTotalCount(),
 	}, nil
+}
+
+// pageSlice applies PageOpts page size / opaque numeric skip tokens to an
+// already-fetched slice (used when the backend returns a full list).
+func pageSlice[T any](items []T, opts PageOpts) Page[T] {
+	pageSize := opts.size()
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	start := 0
+	if tok := strings.TrimSpace(opts.PageToken); tok != "" {
+		if n, err := parseAdvisorySkip(tok); err == nil {
+			start = int(n)
+		}
+	}
+	if start > len(items) {
+		start = len(items)
+	}
+	end := start + int(pageSize)
+	if end > len(items) {
+		end = len(items)
+	}
+	next := ""
+	if end < len(items) {
+		next = fmt.Sprintf("%d", end)
+	}
+	return Page[T]{
+		Items:         items[start:end],
+		NextPageToken: next,
+		TotalCount:    int64(len(items)),
+	}
 }

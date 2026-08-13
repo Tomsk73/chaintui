@@ -485,6 +485,13 @@ func formatBytes(n int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
+func dash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
+}
+
 func truncate(s string, max int) string {
 	if max <= 0 || len(s) <= max {
 		return s
@@ -576,12 +583,14 @@ func NewLibrariesEcosystemPage(client *api.Client) *ListPage {
 // NewLibraryArtifactsPage lists Chainguard Libraries artifacts for one ecosystem.
 func NewLibraryArtifactsPage(client *api.Client, ecosystem string) *ListPage {
 	cols := []table.Column{
-		{Title: "NAME", Width: 28},
-		{Title: "LATEST", Width: 16},
-		{Title: "VERSIONS", Width: 10},
-		{Title: "DESCRIPTION", Width: 36},
-		{Title: "CREATED", Width: 14},
-		{Title: "UPDATED", Width: 14},
+		{Title: "NAME", Width: 26},
+		{Title: "LATEST", Width: 14},
+		{Title: "VERSIONS", Width: 9},
+		{Title: "LICENSE", Width: 14},
+		{Title: "SOURCE", Width: 12},
+		{Title: "DESCRIPTION", Width: 28},
+		{Title: "CREATED", Width: 12},
+		{Title: "UPDATED", Width: 12},
 	}
 	remediated := false
 	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
@@ -596,6 +605,8 @@ func NewLibraryArtifactsPage(client *api.Client, ecosystem string) *ListPage {
 					v.Name,
 					v.LatestVersion,
 					fmt.Sprintf("%d", v.VersionCount),
+					dash(v.License),
+					dash(v.SourceType),
 					truncate(v.Description, 80),
 					relativeTime(v.CreateTime),
 					relativeTime(v.UpdateTime),
@@ -620,24 +631,28 @@ func NewLibraryArtifactsPage(client *api.Client, ecosystem string) *ListPage {
 		WithServerFilter().
 		WithBoolToggle("m", "remediated", &remediated)
 	// Java/Python support server order_by; npm v1 list does not.
+	// License/source are npm-only today, so they are not in the sort map.
 	if ecosystem != string(api.LibraryEcosystemJavaScript) {
 		page = page.WithServerSort(map[int]string{
 			0: "name",
 			1: "latest_version",
 			2: "version_count",
-			4: "create_time",
-			5: "update_time",
+			6: "create_time",
+			7: "update_time",
 		})
 	}
 	return page
 }
 
 // NewLibraryVersionsPage lists versions for one Libraries artifact.
+// Press d to describe — malware/provenance appear in JSON when the API provides them.
 func NewLibraryVersionsPage(client *api.Client, artifactID, artifactName string, remediated bool) *ListPage {
 	cols := []table.Column{
-		{Title: "VERSION", Width: 24},
-		{Title: "SIZE", Width: 12},
-		{Title: "UPDATED", Width: 14},
+		{Title: "VERSION", Width: 22},
+		{Title: "LICENSE", Width: 14},
+		{Title: "SOURCE", Width: 12},
+		{Title: "SIZE", Width: 10},
+		{Title: "UPDATED", Width: 12},
 	}
 	load := func(token string, pageSize int, _, orderBy string) (PageResult, error) {
 		page, err := client.ListArtifactVersions(artifactID, pageOpts(token, pageSize, "", orderBy), remediated)
@@ -646,16 +661,18 @@ func NewLibraryVersionsPage(client *api.Client, artifactID, artifactName string,
 		}
 		return toPageResult(page, func(v api.LibraryArtifactVersion) RowData {
 			return RowData{
-				UID:     v.UID,
-				Columns: []string{v.Version, formatBytes(v.SizeBytes), relativeTime(v.UpdateTime)},
-				Raw:     v,
+				UID: v.UID,
+				Columns: []string{
+					v.Version,
+					dash(v.License),
+					dash(v.SourceType),
+					formatBytes(v.SizeBytes),
+					relativeTime(v.UpdateTime),
+				},
+				Raw: v,
 			}
 		}), nil
 	}
-	page := newListPage("versions", "", cols, load, nil).
+	return newListPage("versions", "", cols, load, nil).
 		WithLabel(artifactName + " versions")
-	if !strings.HasPrefix(artifactID, "npm:") {
-		page = page.WithServerSort(map[int]string{0: "version", 1: "size_bytes", 2: "update_time"})
-	}
-	return page
 }

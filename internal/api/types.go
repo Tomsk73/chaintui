@@ -419,16 +419,24 @@ type LibraryArtifact struct {
 	Ecosystem     string    `json:"ecosystem"`
 	LatestVersion string    `json:"latestVersion,omitempty"`
 	VersionCount  int32     `json:"versionCount,omitempty"`
+	License       string    `json:"license,omitempty"`
+	SourceType    string    `json:"sourceType,omitempty"`
 	CreateTime    time.Time `json:"createTime"`
 	UpdateTime    time.Time `json:"updateTime"`
 }
 
 type LibraryArtifactVersion struct {
-	UID         string    `json:"uid"`
-	Name        string    `json:"name"`
-	Version     string    `json:"version"`
-	Description string    `json:"description,omitempty"`
-	SizeBytes   int64     `json:"sizeBytes,omitempty"`
-	CreateTime  time.Time `json:"createTime"`
-	UpdateTime  time.Time `json:"updateTime"`
+	UID              string    `json:"uid"`
+	Name             string    `json:"name"`
+	Version          string    `json:"version"`
+	Description      string    `json:"description,omitempty"`
+	License          string    `json:"license,omitempty"`
+	SourceType       string    `json:"sourceType,omitempty"`
+	SizeBytes        int64     `json:"sizeBytes,omitempty"`
+	Provenance       string    `json:"provenance,omitempty"`
+	MalwareScanned   bool      `json:"malwareScanned"`
+	MalwareMalicious bool      `json:"malwareMalicious"`
+	MalwareScannedAt time.Time `json:"malwareScannedAt,omitempty"`
+	CreateTime       time.Time `json:"createTime"`
+	UpdateTime       time.Time `json:"updateTime"`
 }

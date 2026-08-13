@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	librariesv2 "chainguard.dev/sdk/proto/chainguard/platform/libraries/v2beta1"
+	librariesv1 "chainguard.dev/sdk/proto/platform/libraries/v1"
 	vulnv2 "chainguard.dev/sdk/proto/chainguard/platform/vulnerabilities/v2beta1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -105,6 +106,36 @@ func TestParseLibraryEcosystem(t *testing.T) {
 	}
 	if isJavaScriptEcosystem("java") {
 		t.Fatal("java should not be javascript")
+	}
+}
+
+func TestLibrarySourceLabels(t *testing.T) {
+	t.Parallel()
+	if got := npmSourceLabel(librariesv1.NpmSourceType_NPM_SOURCE_TYPE_INTERNAL_REMEDIATED); got != "remediated" {
+		t.Fatalf("npm remediated: %q", got)
+	}
+	if got := artifactSourceLabel(librariesv1.SourceType_SOURCE_TYPE_INTERNAL); got != "internal" {
+		t.Fatalf("artifact internal: %q", got)
+	}
+	if !isRemediatedSource("remediated") || isRemediatedSource("internal") {
+		t.Fatal("isRemediatedSource")
+	}
+}
+
+func TestPageSlice(t *testing.T) {
+	t.Parallel()
+	items := []int{0, 1, 2, 3, 4}
+	page := pageSlice(items, PageOpts{PageSize: 2})
+	if len(page.Items) != 2 || page.Items[0] != 0 || page.NextPageToken != "2" || page.TotalCount != 5 {
+		t.Fatalf("first page: %+v", page)
+	}
+	page = pageSlice(items, PageOpts{PageSize: 2, PageToken: "2"})
+	if len(page.Items) != 2 || page.Items[0] != 2 || page.NextPageToken != "4" {
+		t.Fatalf("second page: %+v", page)
+	}
+	page = pageSlice(items, PageOpts{PageSize: 2, PageToken: "4"})
+	if len(page.Items) != 1 || page.Items[0] != 4 || page.NextPageToken != "" {
+		t.Fatalf("last page: %+v", page)
 	}
 }
 
