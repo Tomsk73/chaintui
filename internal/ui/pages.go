@@ -468,3 +468,186 @@ func NewAdvisoriesPage(client *api.Client, groupUID string) *ListPage {
 		WithServerSort(map[int]string{0: "advisory_id", 1: "artifact_name", 3: "create_time"}).
 		WithPageSize(25)
 }
+
+func formatBytes(n int64) string {
+	if n <= 0 {
+		return "-"
+	}
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+func truncate(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
+}
+
+// --- Root menu ---
+
+// NewRootMenuPage is the app home: top-level areas (groups, libraries).
+func NewRootMenuPage(client *api.Client) *ListPage {
+	cols := []table.Column{
+		{Title: "RESOURCE", Width: 20},
+		{Title: "DESCRIPTION", Width: 50},
+	}
+	type entry struct {
+		name, desc string
+		make       func() Page
+	}
+	entries := []entry{
+		{"groups", "Organizations and folders", func() Page {
+			return NewGroupsPage(client, "")
+		}},
+		{"libraries", "Chainguard Libraries artifacts", func() Page {
+			return NewLibrariesEcosystemPage(client)
+		}},
+	}
+	load := func(string, int, string, string) (PageResult, error) {
+		rows := make([]RowData, len(entries))
+		for i, e := range entries {
+			rows[i] = RowData{
+				UID:     e.name,
+				Columns: []string{e.name, e.desc},
+				Raw:     e.make,
+			}
+		}
+		return PageResult{Rows: rows}, nil
+	}
+	enter := func(row RowData) tea.Cmd {
+		makePage, ok := row.Raw.(func() Page)
+		if !ok {
+			return nil
+		}
+		return pushPage(makePage())
+	}
+	return newListPage("home", "", cols, load, enter).WithLabel("home")
+}
+
+// --- Libraries ---
+
+// NewLibrariesEcosystemPage lets the user pick Java or Python before listing artifacts.
+func NewLibrariesEcosystemPage(client *api.Client) *ListPage {
+	cols := []table.Column{
+		{Title: "ECOSYSTEM", Width: 16},
+		{Title: "DESCRIPTION", Width: 40},
+	}
+	type entry struct {
+		id, label, desc string
+	}
+	entries := []entry{
+		{string(api.LibraryEcosystemJava), "java", "Maven / Java packages"},
+		{string(api.LibraryEcosystemPython), "python", "PyPI / Python packages"},
+	}
+	load := func(string, int, string, string) (PageResult, error) {
+		rows := make([]RowData, len(entries))
+		for i, e := range entries {
+			rows[i] = RowData{
+				UID:     e.id,
+				Columns: []string{e.label, e.desc},
+				Raw:     e.id,
+			}
+		}
+		return PageResult{Rows: rows}, nil
+	}
+	enter := func(row RowData) tea.Cmd {
+		eco, _ := row.Raw.(string)
+		if eco == "" {
+			eco = row.UID
+		}
+		return pushPage(NewLibraryArtifactsPage(client, eco).WithLabel(eco + " artifacts"))
+	}
+	return newListPage("libraries", "", cols, load, enter).WithLabel("libraries")
+}
+
+// NewLibraryArtifactsPage lists Chainguard Libraries artifacts for one ecosystem.
+func NewLibraryArtifactsPage(client *api.Client, ecosystem string) *ListPage {
+	cols := []table.Column{
+		{Title: "NAME", Width: 28},
+		{Title: "LATEST", Width: 16},
+		{Title: "VERSIONS", Width: 10},
+		{Title: "DESCRIPTION", Width: 36},
+		{Title: "CREATED", Width: 14},
+		{Title: "UPDATED", Width: 14},
+	}
+	remediated := false
+	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
+		page, err := client.ListArtifacts(ecosystem, pageOpts(token, pageSize, query, orderBy), remediated)
+		if err != nil {
+			return PageResult{}, err
+		}
+		return toPageResult(page, func(v api.LibraryArtifact) RowData {
+			return RowData{
+				UID: v.UID,
+				Columns: []string{
+					v.Name,
+					v.LatestVersion,
+					fmt.Sprintf("%d", v.VersionCount),
+					truncate(v.Description, 80),
+					relativeTime(v.CreateTime),
+					relativeTime(v.UpdateTime),
+				},
+				Raw: v,
+			}
+		}), nil
+	}
+	enter := func(row RowData) tea.Cmd {
+		art, ok := row.Raw.(api.LibraryArtifact)
+		if !ok {
+			return nil
+		}
+		label := art.Name
+		if label == "" {
+			label = art.UID
+		}
+		return pushPage(NewLibraryVersionsPage(client, art.UID, label).WithLabel(label + " versions"))
+	}
+	return newListPage("artifacts", "", cols, load, enter).
+		WithLabel(ecosystem + " artifacts").
+		WithServerFilter().
+		WithServerSort(map[int]string{
+			0: "name",
+			1: "latest_version",
+			2: "version_count",
+			4: "create_time",
+			5: "update_time",
+		}).
+		WithBoolToggle("m", "remediated", &remediated)
+}
+
+// NewLibraryVersionsPage lists versions for one Libraries artifact.
+func NewLibraryVersionsPage(client *api.Client, artifactID, artifactName string) *ListPage {
+	cols := []table.Column{
+		{Title: "VERSION", Width: 24},
+		{Title: "SIZE", Width: 12},
+		{Title: "UPDATED", Width: 14},
+	}
+	load := func(token string, pageSize int, _, orderBy string) (PageResult, error) {
+		page, err := client.ListArtifactVersions(artifactID, pageOpts(token, pageSize, "", orderBy))
+		if err != nil {
+			return PageResult{}, err
+		}
+		return toPageResult(page, func(v api.LibraryArtifactVersion) RowData {
+			return RowData{
+				UID:     v.UID,
+				Columns: []string{v.Version, formatBytes(v.SizeBytes), relativeTime(v.UpdateTime)},
+				Raw:     v,
+			}
+		}), nil
+	}
+	return newListPage("versions", "", cols, load, nil).
+		WithLabel(artifactName + " versions").
+		WithServerSort(map[int]string{0: "version", 1: "size_bytes", 2: "update_time"})
+}

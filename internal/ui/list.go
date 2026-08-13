@@ -63,6 +63,11 @@ type ListPage struct {
 	// local sorting for that column.
 	serverSortFields map[int]string
 
+	// Optional boolean toggle (e.g. remediated filter). Flipping reloads page 1.
+	boolToggleKey   string
+	boolToggleLabel string
+	boolToggle      *bool
+
 	saveMode bool
 	saveIn   textinput.Model
 	saveMsg  string
@@ -174,6 +179,15 @@ func (p *ListPage) WithServerNameFilter() *ListPage {
 // (e.g. 0 → "name"). Sorting a mapped column reloads from the API.
 func (p *ListPage) WithServerSort(fields map[int]string) *ListPage {
 	p.serverSortFields = fields
+	return p
+}
+
+// WithBoolToggle binds a key that flips *flag and reloads from the first page.
+// The flag is read by the caller's loadFn closure. Label is shown in the footer.
+func (p *ListPage) WithBoolToggle(key, label string, flag *bool) *ListPage {
+	p.boolToggleKey = key
+	p.boolToggleLabel = label
+	p.boolToggle = flag
 	return p
 }
 
@@ -349,6 +363,14 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if row, ok := p.selectedRow(); ok {
 					return p, p.enterFn(row)
 				}
+			}
+		default:
+			if p.boolToggle != nil && p.boolToggleKey != "" && msg.String() == p.boolToggleKey && !p.loading {
+				*p.boolToggle = !*p.boolToggle
+				p.loading = true
+				p.err = nil
+				p.resetPagination()
+				return p, tea.Batch(p.spinner.Tick, p.doLoad(""))
 			}
 		}
 	}
@@ -544,6 +566,13 @@ func (p *ListPage) View() string {
 		}
 		if p.filter != "" {
 			parts = append(parts, fmt.Sprintf("filter: %q", p.filter))
+		}
+		if p.boolToggle != nil && p.boolToggleLabel != "" {
+			state := "off"
+			if *p.boolToggle {
+				state = "on"
+			}
+			parts = append(parts, fmt.Sprintf("%s:%s (%s)", p.boolToggleLabel, state, p.boolToggleKey))
 		}
 		if p.hasMorePages() || p.pageNum > 1 || p.totalCount > 0 {
 			pageInfo := fmt.Sprintf("page %d", p.pageNum)

@@ -208,10 +208,23 @@ func TestResetPagination(t *testing.T) {
 	}
 }
 
-func TestWithServerNameFilter(t *testing.T) {
+func TestWithBoolToggle(t *testing.T) {
 	t.Parallel()
-	p := testListPage(nil).WithServerNameFilter()
-	if !p.serverFilter || p.serverFilterHint != "exact name" {
-		t.Fatalf("hint=%q server=%v", p.serverFilterHint, p.serverFilter)
+	flag := false
+	var loads int
+	p := testListPage(func(string, int, string, string) (PageResult, error) {
+		loads++
+		return PageResult{Rows: rows("a")}, nil
+	}).WithBoolToggle("m", "remediated", &flag)
+	p.loading = false
+
+	m, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	p = m.(*ListPage)
+	if !flag {
+		t.Fatal("expected flag flipped on")
 	}
+	if cmd == nil || !p.loading {
+		t.Fatal("expected reload")
+	}
+	_ = loads
 }

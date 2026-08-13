@@ -66,10 +66,10 @@ type App struct {
 
 func New(client *api.Client) App {
 	c := textinput.New()
-	c.Placeholder = "resource (groups, identities, roles, rb, repos, tags, adv)..."
+	c.Placeholder = "resource (groups, libraries, repos, adv)..."
 	c.CharLimit = 40
 
-	root := NewGroupsPage(client, "")
+	root := NewRootMenuPage(client)
 	return App{
 		client: client,
 		stack:  []Page{root},
@@ -237,6 +237,8 @@ func (a App) groupPath() string {
 
 func resolveResourcePage(client *api.Client, resource, groupCtx string) Page {
 	switch strings.ToLower(strings.TrimSpace(resource)) {
+	case "home", "menu", "root":
+		return NewRootMenuPage(client)
 	case "g", "group", "groups":
 		return NewGroupsPage(client, groupCtx)
 	case "id", "identity", "identities":
@@ -255,6 +257,12 @@ func resolveResourcePage(client *api.Client, resource, groupCtx string) Page {
 		//		return NewTagsPage(client, groupCtx)
 	case "adv", "advisory", "advisories":
 		return NewAdvisoriesPage(client, groupCtx)
+	case "lib", "libs", "library", "libraries", "artifact", "artifacts":
+		return NewLibrariesEcosystemPage(client)
+	case "java", "libraries/java", "lib/java":
+		return NewLibraryArtifactsPage(client, string(api.LibraryEcosystemJava))
+	case "python", "libraries/python", "lib/python", "pypi":
+		return NewLibraryArtifactsPage(client, string(api.LibraryEcosystemPython))
 	}
 	return nil
 }
@@ -291,8 +299,12 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 		keyHint("[", "prev page"),
 		keyHint("]", "next page"),
 	}
-	if resource == "groups" || resource == "group" || resource == "repos" || resource == "tags" {
+	if resource == "groups" || resource == "group" || resource == "repos" || resource == "tags" ||
+		resource == "home" || resource == "libraries" || resource == "artifacts" {
 		hints = append(hints, keyHint("↵", "drill down"))
+	}
+	if resource == "artifacts" {
+		hints = append(hints, keyHint("m", "remediated"))
 	}
 	if resource == "sbom" {
 		hints = append(hints, keyHint("s", "save csv"))

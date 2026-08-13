@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	librariesv2 "chainguard.dev/sdk/proto/chainguard/platform/libraries/v2beta1"
 	vulnv2 "chainguard.dev/sdk/proto/chainguard/platform/vulnerabilities/v2beta1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -84,6 +85,22 @@ func TestIsNotLoggedIn(t *testing.T) {
 		t.Fatal("unrelated error")
 	}
 }
+
+func TestParseLibraryEcosystem(t *testing.T) {
+	t.Parallel()
+	java, err := parseLibraryEcosystem("java")
+	if err != nil || java != librariesv2.Ecosystem_ECOSYSTEM_JAVA {
+		t.Fatalf("java: %v %v", java, err)
+	}
+	py, err := parseLibraryEcosystem("pypi")
+	if err != nil || py != librariesv2.Ecosystem_ECOSYSTEM_PYTHON {
+		t.Fatalf("pypi: %v %v", py, err)
+	}
+	if _, err := parseLibraryEcosystem("npm"); err == nil {
+		t.Fatal("expected error for npm")
+	}
+}
+
 
 func advisoryAt(i int) *vulnv2.Advisory {
 	return &vulnv2.Advisory{

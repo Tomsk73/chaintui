@@ -4,13 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
 
+	delegate "chainguard.dev/go-grpc-kit/pkg/options"
 	cgauth "chainguard.dev/sdk/auth"
 	v2beta1 "chainguard.dev/sdk/proto/chainguard/platform/clients/v2beta1"
+	librariesv2 "chainguard.dev/sdk/proto/chainguard/platform/libraries/v2beta1"
 	"chainguard.dev/sdk/proto/platform"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 const (
@@ -19,11 +24,13 @@ const (
 )
 
 type Client struct {
-	v2       v2beta1.Clients
-	platform platform.Clients // v1 — SBOM / manifest metadata only
-	token    string
-	subject  string
-	email    string
+	v2        v2beta1.Clients
+	platform  platform.Clients // v1 — SBOM / manifest metadata only
+	libraries librariesv2.Clients
+	libConn   *grpc.ClientConn // owns libraries connection
+	token     string
+	subject   string
+	email     string
 }
 
 // Subject returns the authenticated identity's UIDP (from the JWT sub claim).
@@ -31,6 +38,28 @@ func (c *Client) Subject() string { return c.subject }
 
 // Email returns the authenticated user's email if present in the token.
 func (c *Client) Email() string { return c.email }
+
+// Close releases API connections. Safe to call multiple times.
+func (c *Client) Close() error {
+	var first error
+	if c.v2 != nil {
+		if err := c.v2.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	if c.platform != nil {
+		if err := c.platform.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	if c.libConn != nil {
+		if err := c.libConn.Close(); err != nil && first == nil {
+			first = err
+		}
+		c.libConn = nil
+	}
+	return first
+}
 
 // NewClient resolves a token from the environment or chainctl's token cache.
 // Returns an error matching ErrNotLoggedIn if no cached token exists.
@@ -84,14 +113,37 @@ func newClient(token string) (*Client, error) {
 		return nil, fmt.Errorf("create platform clients: %w", err)
 	}
 
+	libConn, libs, err := dialLibraries(cred)
+	if err != nil {
+		_ = v2.Close()
+		_ = p.Close()
+		return nil, fmt.Errorf("create libraries clients: %w", err)
+	}
+
 	sub, email := parseToken(token)
 	return &Client{
-		v2:       v2,
-		platform: p,
-		token:    token,
-		subject:  sub,
-		email:    email,
+		v2:        v2,
+		platform:  p,
+		libraries: libs,
+		libConn:   libConn,
+		token:     token,
+		subject:   sub,
+		email:     email,
 	}, nil
+}
+
+func dialLibraries(cred credentials.PerRPCCredentials) (*grpc.ClientConn, librariesv2.Clients, error) {
+	uri, err := url.Parse(apiBase)
+	if err != nil {
+		return nil, nil, err
+	}
+	target, opts := delegate.GRPCOptions(*uri)
+	opts = append(opts, grpc.WithPerRPCCredentials(cred), grpc.WithUserAgent(userAgent))
+	conn, err := grpc.NewClient(target, opts...)
+	if err != nil {
+		return nil, nil, err
+	}
+	return conn, librariesv2.NewClientsFromConnection(conn), nil
 }
 
 // cachedToken returns a token from the environment or chainctl's cache.
