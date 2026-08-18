@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"context"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -580,6 +582,36 @@ func NewLibrariesEcosystemPage(client *api.Client) *ListPage {
 	return newListPage("libraries", "", cols, load, enter).WithLabel("libraries")
 }
 
+// inventoryFilename names an inventory export after its timestamp and ecosystem,
+// e.g. 20260818T143000Z-python.json. UTC and fixed-width so names sort by time.
+func inventoryFilename(ecosystem string, remediated bool, at time.Time) string {
+	name := at.UTC().Format("20060102T150405Z") + "-" + ecosystem
+	if remediated {
+		name += "-remediated"
+	}
+	return name + ".json"
+}
+
+// writeLibraryInventory writes inv as JSON in the working directory and returns
+// the filename. It never overwrites: a name clash is reported as an error.
+func writeLibraryInventory(inv api.LibraryInventory) (string, error) {
+	name := inventoryFilename(inv.Ecosystem, inv.Remediated, inv.GeneratedAt)
+	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return "", err
+	}
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(inv); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
 // NewLibraryArtifactsPage lists Chainguard Libraries artifacts for one ecosystem.
 func NewLibraryArtifactsPage(client *api.Client, ecosystem string) *ListPage {
 	cols := []table.Column{
@@ -626,10 +658,18 @@ func NewLibraryArtifactsPage(client *api.Client, ecosystem string) *ListPage {
 		}
 		return pushPage(NewLibraryVersionsPage(client, art.UID, label, remediated).WithLabel(label + " versions"))
 	}
+	export := func(ctx context.Context, progress func(done, total int)) (string, error) {
+		inv, err := client.BuildLibraryInventory(ctx, ecosystem, remediated, progress)
+		if err != nil {
+			return "", err
+		}
+		return writeLibraryInventory(inv)
+	}
 	page := newListPage("artifacts", "", cols, load, enter).
 		WithLabel(ecosystem + " artifacts").
 		WithServerFilter().
-		WithBoolToggle("m", "remediated", &remediated)
+		WithBoolToggle("m", "remediated", &remediated).
+		WithExport("x", "exporting "+ecosystem, export)
 	// Java/Python support server order_by; npm v1 list does not.
 	// License/source are npm-only today, so they are not in the sort map.
 	if ecosystem != string(api.LibraryEcosystemJavaScript) {

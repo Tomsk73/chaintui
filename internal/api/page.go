@@ -13,12 +13,15 @@ type PageOpts struct {
 // DefaultPageSize matches the API default when PageSize is unset or invalid.
 const DefaultPageSize int32 = 50
 
+// MaxPageSize is the largest page the API accepts; larger requests are clamped.
+const MaxPageSize int32 = 200
+
 func (o PageOpts) size() int32 {
 	if o.PageSize <= 0 {
 		return DefaultPageSize
 	}
-	if o.PageSize > 200 {
-		return 200
+	if o.PageSize > MaxPageSize {
+		return MaxPageSize
 	}
 	return o.PageSize
 }

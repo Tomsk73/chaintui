@@ -1,11 +1,18 @@
 package ui
 
 import (
+	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+func keyPress(r rune) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
+}
 
 func testListPage(loadFn func(string, int, string, string) (PageResult, error)) *ListPage {
 	cols := []table.Column{
@@ -205,6 +212,147 @@ func TestResetPagination(t *testing.T) {
 	p.resetPagination()
 	if p.pageToken != "" || p.nextPageToken != "" || p.prevTokens != nil || p.pageNum != 1 || p.totalCount != 0 {
 		t.Fatalf("%+v", p)
+	}
+}
+
+// drainExport pumps export events through Update until the export finishes.
+func drainExport(t *testing.T, p *ListPage) *ListPage {
+	t.Helper()
+	run := p.exportEvents
+	if run == nil {
+		t.Fatal("no export running")
+	}
+	for i := 0; i < 100; i++ {
+		msg := waitForExport(run)()
+		ev, ok := msg.(exportEvent)
+		if !ok {
+			t.Fatalf("msg type %T", msg)
+		}
+		m, _ := p.Update(ev)
+		p = m.(*ListPage)
+		if ev.finished {
+			return p
+		}
+	}
+	t.Fatal("export never finished")
+	return p
+}
+
+func TestExportKeyRunsToCompletion(t *testing.T) {
+	t.Parallel()
+	p := testListPage(nil).WithExport("x", "exporting java",
+		func(_ context.Context, progress func(done, total int)) (string, error) {
+			progress(0, 2)
+			progress(2, 2)
+			return "20260818T143000Z-java.json", nil
+		})
+
+	m, cmd := p.Update(keyPress('x'))
+	p = m.(*ListPage)
+	if !p.exporting || cmd == nil {
+		t.Fatalf("expected export to start: exporting=%v cmd=%v", p.exporting, cmd)
+	}
+
+	p = drainExport(t, p)
+	if p.exporting || p.exportEvents != nil {
+		t.Fatal("export state should be cleared when finished")
+	}
+	if !strings.Contains(p.saveMsg, "20260818T143000Z-java.json") {
+		t.Fatalf("saveMsg=%q", p.saveMsg)
+	}
+}
+
+func TestExportProgressUpdatesStatus(t *testing.T) {
+	t.Parallel()
+	p := testListPage(nil).WithExport("x", "exporting java", nil)
+	p.exporting = true
+	if got := p.exportStatus(); !strings.Contains(got, "listing packages...") {
+		t.Fatalf("pre-count status=%q", got)
+	}
+	// Listing phase: total unknown, done is the running discovery count.
+	m, _ := p.Update(exportEvent{done: 400, total: 0})
+	p = m.(*ListPage)
+	if got := p.exportStatus(); !strings.Contains(got, "400 so far") {
+		t.Fatalf("listing status=%q", got)
+	}
+	m, _ = p.Update(exportEvent{done: 3, total: 12})
+	p = m.(*ListPage)
+	got := p.exportStatus()
+	if !strings.Contains(got, "3/12 packages") || !strings.Contains(got, "25%") {
+		t.Fatalf("status=%q", got)
+	}
+	if !strings.Contains(got, "x to cancel") {
+		t.Fatalf("status should offer cancel: %q", got)
+	}
+}
+
+func TestExportKeyCancelsRunningExport(t *testing.T) {
+	t.Parallel()
+	p := testListPage(nil).WithExport("x", "exporting java",
+		func(ctx context.Context, _ func(done, total int)) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		})
+
+	m, _ := p.Update(keyPress('x'))
+	p = m.(*ListPage)
+	m, cmd := p.Update(keyPress('x')) // second press cancels
+	p = m.(*ListPage)
+	if cmd != nil {
+		t.Fatal("cancel should not start another export")
+	}
+	p = drainExport(t, p)
+	if p.exporting {
+		t.Fatal("still exporting after cancel")
+	}
+	if !strings.Contains(p.saveMsg, "cancelled") {
+		t.Fatalf("saveMsg=%q", p.saveMsg)
+	}
+}
+
+func TestExportBlocksReloadKeys(t *testing.T) {
+	t.Parallel()
+	flag := false
+	p := testListPage(nil).
+		WithBoolToggle("m", "remediated", &flag).
+		WithExport("x", "exporting java",
+			func(ctx context.Context, _ func(done, total int)) (string, error) {
+				<-ctx.Done()
+				return "", ctx.Err()
+			})
+
+	m, _ := p.Update(keyPress('x'))
+	p = m.(*ListPage)
+
+	for _, key := range []rune{'r', '/', 'o', 'm', ']'} {
+		m, cmd := p.Update(keyPress(key))
+		p = m.(*ListPage)
+		if cmd != nil {
+			t.Fatalf("%q should be ignored while exporting", key)
+		}
+	}
+	if p.filterMode || p.sortMode || flag || p.loading {
+		t.Fatalf("export should not be interrupted: filter=%v sort=%v flag=%v loading=%v",
+			p.filterMode, p.sortMode, flag, p.loading)
+	}
+
+	p.cancelExport()
+	p = drainExport(t, p)
+}
+
+func TestInventoryFilename(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 8, 18, 14, 30, 0, 0, time.UTC)
+	if got := inventoryFilename("python", false, at); got != "20260818T143000Z-python.json" {
+		t.Fatalf("got %q", got)
+	}
+	if got := inventoryFilename("javascript", true, at); got != "20260818T143000Z-javascript-remediated.json" {
+		t.Fatalf("remediated: got %q", got)
+	}
+	// Local-zone input is normalised to UTC so names always sort by real time.
+	local := at.In(time.FixedZone("UTC+10", 10*60*60))
+	if got := inventoryFilename("java", false, local); got != "20260818T143000Z-java.json" {
+		t.Fatalf("zone: got %q", got)
 	}
 }
 

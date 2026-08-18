@@ -306,7 +306,7 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 		hints = append(hints, keyHint("↵", "drill down"))
 	}
 	if resource == "artifacts" {
-		hints = append(hints, keyHint("m", "remediated"))
+		hints = append(hints, keyHint("m", "remediated"), keyHint("x", "export json"))
 	}
 	if resource == "sbom" {
 		hints = append(hints, keyHint("s", "save csv"))

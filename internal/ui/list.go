@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -70,8 +72,20 @@ type ListPage struct {
 
 	saveMode bool
 	saveIn   textinput.Model
-	saveMsg  string
-	saveFn   func(filename string, rows []RowData) error
+	// saveMsg is the shared status line for anything written to disk (save, export).
+	saveMsg string
+	saveFn  func(filename string, rows []RowData) error
+
+	// Background export of the full result set (every page), written to a file
+	// by exportFn. See WithExport.
+	exportKey    string
+	exportLabel  string
+	exportFn     func(ctx context.Context, progress func(done, total int)) (filename string, err error)
+	exporting    bool
+	exportCancel context.CancelFunc
+	exportEvents *exportRun
+	exportDone   int
+	exportTotal  int
 
 	sortMode bool
 	sortCol  int // -1 = unsorted
@@ -191,6 +205,80 @@ func (p *ListPage) WithBoolToggle(key, label string, flag *bool) *ListPage {
 	return p
 }
 
+// exportEvent is one update from a running export: either progress (done/total
+// packages) or, when finished is set, the outcome.
+type exportEvent struct {
+	done, total int
+	finished    bool
+	filename    string
+	err         error
+}
+
+// WithExport binds a key that runs a long-running export of the entire result
+// set in the background — not just the current page. fn writes the file itself
+// and returns its name; it reports progress through the callback it is given.
+// Pressing the key while an export is running cancels it.
+func (p *ListPage) WithExport(key, label string, fn func(ctx context.Context, progress func(done, total int)) (string, error)) *ListPage {
+	p.exportKey = key
+	p.exportLabel = label
+	p.exportFn = fn
+	return p
+}
+
+// exportRun carries events from a running export back to the update loop.
+// Progress is droppable; done is buffered so the worker never blocks on it even
+// if the user has navigated away from this page.
+type exportRun struct {
+	progress chan exportEvent
+	done     chan exportEvent
+}
+
+// startExport runs exportFn in a goroutine and streams its events into the
+// update loop.
+func (p *ListPage) startExport() tea.Cmd {
+	run := &exportRun{
+		progress: make(chan exportEvent, 32),
+		done:     make(chan exportEvent, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	p.exporting = true
+	p.exportCancel = cancel
+	p.exportEvents = run
+	p.exportDone, p.exportTotal = 0, 0
+	p.saveMsg = ""
+	fn := p.exportFn
+	go func() {
+		defer cancel()
+		name, err := fn(ctx, func(done, total int) {
+			select {
+			case run.progress <- exportEvent{done: done, total: total}:
+			default: // UI is behind; skip this tick rather than stall the export
+			}
+		})
+		run.done <- exportEvent{finished: true, filename: name, err: err}
+	}()
+	return tea.Batch(p.spinner.Tick, waitForExport(run))
+}
+
+func waitForExport(run *exportRun) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case ev := <-run.done:
+			return ev
+		case ev := <-run.progress:
+			return ev
+		}
+	}
+}
+
+// cancelExport asks a running export to stop; the worker still reports a final
+// event, which flips the page out of its exporting state.
+func (p *ListPage) cancelExport() {
+	if p.exportCancel != nil {
+		p.exportCancel()
+	}
+}
+
 func (p *ListPage) WithSave(fn func(filename string, rows []RowData) error) *ListPage {
 	si := textinput.New()
 	si.Placeholder = "filename..."
@@ -289,8 +377,35 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.err = msg.err
 		return p, nil
 
+	case exportEvent:
+		// An export whose page was popped mid-run still finishes and writes its
+		// file; its trailing events land on whatever page is now on top, so
+		// ignore anything that is not ours.
+		if !p.exporting {
+			return p, nil
+		}
+		if !msg.finished {
+			p.exportDone, p.exportTotal = msg.done, msg.total
+			if p.exportEvents == nil {
+				return p, nil
+			}
+			return p, waitForExport(p.exportEvents)
+		}
+		p.exporting = false
+		p.exportEvents = nil
+		p.exportCancel = nil
+		switch {
+		case errors.Is(msg.err, context.Canceled):
+			p.saveMsg = dimStyle.Render("export cancelled")
+		case msg.err != nil:
+			p.saveMsg = errStyle.Render("export failed: " + msg.err.Error())
+		default:
+			p.saveMsg = dimStyle.Render("exported to " + msg.filename)
+		}
+		return p, nil
+
 	case spinner.TickMsg:
-		if p.loading {
+		if p.loading || p.exporting {
 			var cmd tea.Cmd
 			p.spinner, cmd = p.spinner.Update(msg)
 			return p, cmd
@@ -306,6 +421,11 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if p.sortMode {
 			return p.updateSort(msg)
+		}
+		// A running export owns the current result set: allow only cursor
+		// movement and the export key (which cancels).
+		if p.exporting && !isTableNavKey(msg) && msg.String() != p.exportKey {
+			return p, nil
 		}
 		switch msg.String() {
 		case "r":
@@ -365,6 +485,16 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		default:
+			if p.exportFn != nil && p.exportKey != "" && msg.String() == p.exportKey {
+				if p.exporting {
+					p.cancelExport()
+					return p, nil
+				}
+				if p.loading {
+					return p, nil
+				}
+				return p, p.startExport()
+			}
 			if p.boolToggle != nil && p.boolToggleKey != "" && msg.String() == p.boolToggleKey && !p.loading {
 				*p.boolToggle = !*p.boolToggle
 				p.loading = true
@@ -462,6 +592,16 @@ func (p *ListPage) updateSort(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
+// isTableNavKey reports whether a key only moves the table cursor, matching the
+// bubbles table default keymap.
+func isTableNavKey(msg tea.KeyMsg) bool {
+	switch msg.String() {
+	case "up", "down", "j", "k", "pgup", "pgdown", "b", "f", " ", "home", "end", "g", "G":
+		return true
+	}
+	return false
+}
+
 func (p *ListPage) applyFilter() {
 	f := strings.ToLower(p.filter)
 	var filtered []RowData
@@ -515,6 +655,28 @@ func (p *ListPage) selectedRow() (RowData, bool) {
 	return RowData{}, false
 }
 
+// exportStatus is the progress text shown while an export runs. A zero total
+// means the export is still discovering how much work there is.
+func (p *ListPage) exportStatus() string {
+	label := p.exportLabel
+	if label == "" {
+		label = "exporting"
+	}
+	switch {
+	case p.exportTotal > 0:
+		pct := p.exportDone * 100 / p.exportTotal
+		label += fmt.Sprintf(": %d/%d packages (%d%%)", p.exportDone, p.exportTotal, pct)
+	case p.exportDone > 0:
+		label += fmt.Sprintf(": listing packages (%d so far)...", p.exportDone)
+	default:
+		label += ": listing packages..."
+	}
+	if p.exportKey != "" {
+		label += "  │  " + p.exportKey + " to cancel"
+	}
+	return label
+}
+
 func (p *ListPage) hasMorePages() bool {
 	return p.nextPageToken != "" || len(p.prevTokens) > 0
 }
@@ -531,6 +693,8 @@ func (p *ListPage) View() string {
 
 	var bottom string
 	switch {
+	case p.exporting:
+		bottom = cmdBarStyle.Render(p.spinner.View() + " " + p.exportStatus())
 	case p.saveMode:
 		bottom = cmdBarStyle.Render("save to: " + p.saveIn.View())
 	case p.saveMsg != "":
