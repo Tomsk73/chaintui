@@ -368,7 +368,7 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 		keyHint("]", "next page"),
 	}
 	switch resource {
-	case "groups", "group", "repos", "tags", "charts", "libraries", "artifacts",
+	case "groups", "group", "repos", "repo", "tags", "charts", "libraries", "artifacts",
 		"org", "librariespolicy":
 		hints = append(hints, keyHint("↵", "drill down"))
 	case orgListResource:

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -538,7 +539,7 @@ func (c *Client) GetTagSBOM(repoUID, digest string) ([]SBOMPackage, error) {
 		RepoId: repoUID,
 		Items: []*registryv1.ManifestMetadataFilterEntry{
 			{Filter: &registryv1.ManifestMetadataFilterEntry_IndexFilter{
-				IndexFilter: &registryv1.ManifestMetadataIndexFilter{Digest: digest, Arch: "amd64"},
+				IndexFilter: &registryv1.ManifestMetadataIndexFilter{Digest: digest, Arch: sbomArch},
 			}},
 		},
 	})
@@ -558,6 +559,107 @@ func (c *Client) GetTagSBOM(repoUID, digest string) ([]SBOMPackage, error) {
 		}
 	}
 	return out, nil
+}
+
+// ErrNoImage means the repo has no image under the requested tag.
+var ErrNoImage = errors.New("no image")
+
+// A multi-arch tag points at an index, so reading its SBOM means picking one
+// architecture. sbomArch is the registry's name for it and advisoryArch is the
+// advisory catalogue's name for the same thing; keep the two in step.
+const (
+	sbomArch     = "amd64"
+	advisoryArch = "x86_64"
+)
+
+// ImagePackages is what one image ships, as named by its SBOM.
+type ImagePackages struct {
+	Tag    string
+	Digest string
+	// Names are the distro package names in the image, deduped and sorted.
+	// These match the component name on an APK advisory.
+	Names []string
+	// Total counts every SBOM package, including the language-ecosystem ones
+	// that Names leaves out.
+	Total int
+	// Architecture is the arch these packages were read for, named as the
+	// advisory catalogue names it.
+	Architecture string
+}
+
+// ListImagePackages resolves a repo's tag to an image and returns the packages
+// its SBOM names. Tag defaults to "latest".
+func (c *Client) ListImagePackages(repoUID, tag string) (ImagePackages, error) {
+	if strings.TrimSpace(tag) == "" {
+		tag = "latest"
+	}
+	// ListTags with a Query matches the name exactly, so this is a lookup of the
+	// one tag rather than a scan of the repo.
+	page, err := c.ListTags(repoUID, PageOpts{Query: tag, PageSize: 1})
+	if err != nil {
+		return ImagePackages{}, err
+	}
+	digest := digestForTag(page.Items, tag)
+	if digest == "" {
+		return ImagePackages{}, fmt.Errorf("%w tagged %s", ErrNoImage, tag)
+	}
+	pkgs, err := c.GetTagSBOM(repoUID, digest)
+	if err != nil {
+		return ImagePackages{}, err
+	}
+	return ImagePackages{
+		Tag:          tag,
+		Digest:       digest,
+		Names:        distroPackageNames(pkgs),
+		Total:        len(pkgs),
+		Architecture: advisoryArch,
+	}, nil
+}
+
+// digestForTag finds the exact tag in a page of results. The name filter is a
+// server-side exact match, but the response is still a list, and a tag without a
+// digest is one we cannot resolve to an image.
+func digestForTag(tags []Tag, tag string) string {
+	for _, t := range tags {
+		if t.Name == tag {
+			return t.Digest
+		}
+	}
+	return ""
+}
+
+// distroPackageNames picks the APK packages out of an SBOM, deduped and sorted.
+// Language-ecosystem entries (Go modules, npm, ...) are left out: advisories are
+// filed against distro package names.
+//
+// An SBOM whose entries carry no PURL at all is of an unrecognised shape rather
+// than one without distro packages, so every name is returned instead of none.
+func distroPackageNames(pkgs []SBOMPackage) []string {
+	apk, all := map[string]bool{}, map[string]bool{}
+	purled := false
+	for _, p := range pkgs {
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			continue
+		}
+		all[name] = true
+		if strings.HasPrefix(p.Purl, "pkg:") {
+			purled = true
+		}
+		if strings.HasPrefix(p.Purl, "pkg:apk/") {
+			apk[name] = true
+		}
+	}
+	names := apk
+	if !purled {
+		names = all
+	}
+	out := make([]string, 0, len(names))
+	for n := range names {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func mapAdvisory(v *vulnv2.Advisory) Advisory {
@@ -591,15 +693,34 @@ func parseAdvisorySkip(token string) (int32, error) {
 	return int32(n), nil
 }
 
-func (c *Client) listAdvisoriesRaw(ctx context.Context, groupUID string, opts PageOpts, pageSize, skip int32) (*vulnv2.ListAdvisoriesResponse, error) {
-	req := &vulnv2.ListAdvisoriesRequest{
-		PageSize: pageSize,
-		Skip:     skip,
-		OrderBy:  opts.OrderBy,
-		Query:    opts.Query,
-	}
-	req.Uidp = uidpScope(groupUID)
+// listAdvisoriesRaw is deliberately unscoped. Advisories are a single global
+// catalogue rather than per-org data — every record lives under Chainguard's own
+// group — so filtering by the caller's org UIDP matches nothing at all.
+//
+// Of the request's artifact/component filters only component_names has any
+// effect: the server accepts artifact_names and then ignores it, returning the
+// unfiltered catalogue. For APK advisories the component is the installed
+// package name, which is what an image's SBOM lists, so component_names is the
+// right filter anyway.
+func (c *Client) listAdvisoriesRaw(ctx context.Context, filter AdvisoryFilter, opts PageOpts, pageSize, skip int32) (*vulnv2.ListAdvisoriesResponse, error) {
+	req := advisoryRequest(filter, opts, pageSize, skip)
 	return c.v2.Vulnerabilities().AdvisoriesService().ListAdvisories(ctx, req)
+}
+
+// advisoryRequest builds the list request. Notably it sets no Uidp — see
+// listAdvisoriesRaw.
+func advisoryRequest(filter AdvisoryFilter, opts PageOpts, pageSize, skip int32) *vulnv2.ListAdvisoriesRequest {
+	req := &vulnv2.ListAdvisoriesRequest{
+		PageSize:       pageSize,
+		Skip:           skip,
+		OrderBy:        opts.OrderBy,
+		Query:          opts.Query,
+		ComponentNames: filter.ComponentNames,
+	}
+	if filter.Architecture != "" {
+		req.ArtifactArchitectures = []string{filter.Architecture}
+	}
+	return req
 }
 
 // advisoryFetcher loads a window of advisories starting at skip.
@@ -715,9 +836,29 @@ func collectAdvisoriesPage(opts PageOpts, fetch advisoryFetcher) (Page[Advisory]
 }
 
 // ListAdvisories returns one page of advisories.
-func (c *Client) ListAdvisories(groupUID string, opts PageOpts) (Page[Advisory], error) {
+// AdvisoryFilter narrows the advisory catalogue to a subset worth reading.
+type AdvisoryFilter struct {
+	// ComponentNames restricts results to advisories whose component is one of
+	// these installed package names.
+	ComponentNames []string
+	// Architecture restricts results to one artifact architecture, e.g. x86_64.
+	// Advisories are filed per architecture, so leaving this empty lists a
+	// dual-arch package's advisories twice.
+	Architecture string
+}
+
+// ListAdvisories returns one page of the Chainguard advisory catalogue. It takes
+// no group: see listAdvisoriesRaw for why advisories are not org-scoped.
+func (c *Client) ListAdvisories(opts PageOpts) (Page[Advisory], error) {
+	return c.ListAdvisoriesFiltered(AdvisoryFilter{}, opts)
+}
+
+// ListAdvisoriesFiltered narrows the catalogue before paging it. Opts still
+// apply, so a free-text Query searches within the filtered set rather than the
+// whole catalogue.
+func (c *Client) ListAdvisoriesFiltered(filter AdvisoryFilter, opts PageOpts) (Page[Advisory], error) {
 	ctx := context.Background()
 	return collectAdvisoriesPage(opts, func(pageSize, skip int32) (*vulnv2.ListAdvisoriesResponse, error) {
-		return c.listAdvisoriesRaw(ctx, groupUID, opts, pageSize, skip)
+		return c.listAdvisoriesRaw(ctx, filter, opts, pageSize, skip)
 	})
 }

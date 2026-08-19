@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -354,10 +356,10 @@ func NewReposPage(client *api.Client, groupUID string) *ListPage {
 		}), nil
 	}
 	enter := func(row RowData) tea.Cmd {
-		return pushPage(NewTagsPage(client, row.UID, row.Columns[0]))
+		return pushPage(NewRepoMenuPage(client, groupUID, row.UID, row.Columns[0]))
 	}
-	// v shows the CVE list for the repo's latest image; Enter is already taken by
-	// the tag list. Press v on a tag for a specific image.
+	// v is a shortcut straight to the menu's cves entry, for the repo's latest
+	// image. Press v on a tag for a specific image.
 	cves := func(row RowData) tea.Cmd {
 		repo, ok := row.Raw.(api.Repo)
 		if !ok {
@@ -369,6 +371,27 @@ func NewReposPage(client *api.Client, groupUID string) *ListPage {
 		WithServerNameFilter().
 		WithServerSort(map[int]string{0: "name", 2: "create_time"}).
 		WithRowAction("v", cves)
+}
+
+// --- Repo menu ---
+
+// NewRepoMenuPage is what Enter on a repo opens: the views available for one
+// image. groupUID is carried through because the advisory list is scoped to the
+// org, not to the repo.
+func NewRepoMenuPage(client *api.Client, groupUID, repoUID, repoName string) *ListPage {
+	entries := []menuEntry{
+		{"tags", "Image tags in this repository", func() Page {
+			return NewTagsPage(client, repoUID, repoName)
+		}},
+		{"cves", "CVEs in the latest image", func() Page {
+			return NewImageCVEsPage(client, repoUID, repoName, "latest", "")
+		}},
+		{"advisories", "Advisories for the packages in the latest image", func() Page {
+			return NewImageAdvisoriesPage(client, groupUID, repoUID, repoName, "latest")
+		}},
+	}
+	// The menu's own context stays the org so `:` commands still scope to it.
+	return newMenuPage("repo", groupUID, repoName, entries)
 }
 
 // --- Tags ---
@@ -466,35 +489,116 @@ func NewSBOMPage(client *api.Client, repoUID, tagName, digest string) *ListPage 
 
 // --- Advisories ---
 
-func NewAdvisoriesPage(client *api.Client, groupUID string) *ListPage {
-	cols := []table.Column{
+// advisoryCols, advisoryRow and advisorySortFields are shared by the org-wide
+// advisory list and the per-image one, so the two read identically.
+func advisoryCols() []table.Column {
+	return []table.Column{
 		{Title: "ID", Width: 20},
 		{Title: "ARTIFACT", Width: 30},
 		{Title: "ALIASES", Width: 40},
 		{Title: "CREATED", Width: 14},
 	}
+}
+
+func advisoryRow(v api.Advisory) RowData {
+	id := v.AdvisoryID
+	if id == "" {
+		id = v.UID
+	}
+	return RowData{
+		UID:     v.UID,
+		Columns: []string{id, v.ArtifactName, strings.Join(v.Aliases, ", "), relativeTime(v.CreateTime)},
+		Raw:     v,
+	}
+}
+
+// advisorySortFields maps the only column the API can sort on. It rejects
+// anything but uid and created_at with InvalidArgument, so the other columns
+// fall back to sorting the current page locally.
+func advisorySortFields() map[int]string {
+	return map[int]string{3: "created_at"}
+}
+
+// NewAdvisoriesPage lists the Chainguard advisory catalogue. groupUID is the
+// page's navigation context only: advisories are global, not org-scoped.
+func NewAdvisoriesPage(client *api.Client, groupUID string) *ListPage {
 	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
-		page, err := client.ListAdvisories(groupUID, pageOpts(token, pageSize, query, orderBy))
+		page, err := client.ListAdvisories(pageOpts(token, pageSize, query, orderBy))
 		if err != nil {
 			return PageResult{}, err
 		}
-		return toPageResult(page, func(v api.Advisory) RowData {
-			id := v.AdvisoryID
-			if id == "" {
-				id = v.UID
-			}
-			aliases := strings.Join(v.Aliases, ", ")
-			return RowData{
-				UID:     v.UID,
-				Columns: []string{id, v.ArtifactName, aliases, relativeTime(v.CreateTime)},
-				Raw:     v,
-			}
-		}), nil
+		res := toPageResult(page, advisoryRow)
+		res.Status = "Chainguard advisory catalogue — not scoped to this org"
+		return res, nil
 	}
-	return newListPage("advisories", groupUID, cols, load, nil).
+	return newListPage("advisories", groupUID, advisoryCols(), load, nil).
 		WithServerFilter().
-		WithServerSort(map[int]string{0: "advisory_id", 1: "artifact_name", 3: "create_time"}).
+		WithServerSort(advisorySortFields()).
 		WithPageSize(25)
+}
+
+// NewImageAdvisoriesPage lists the advisories that apply to one image: those
+// whose component is one of the distro packages its SBOM names. groupUID is the
+// page's navigation context only — advisories are a global catalogue.
+//
+// The package list costs a tag lookup plus an SBOM fetch, so it is resolved once
+// and reused for every page of advisories.
+func NewImageAdvisoriesPage(client *api.Client, groupUID, repoUID, repoName, tag string) *ListPage {
+	var (
+		mu     sync.Mutex
+		cached api.ImagePackages
+	)
+	// resolve caches the image's package list. A failure leaves the cache empty
+	// so r retries the lookup rather than sticking on the error. The lock is held
+	// across the call so two overlapping loads cannot both fetch it.
+	resolve := func() (api.ImagePackages, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(cached.Names) > 0 {
+			return cached, nil
+		}
+		img, err := client.ListImagePackages(repoUID, tag)
+		if err != nil {
+			return api.ImagePackages{}, describeImageError(err, repoName, tag)
+		}
+		if len(img.Names) == 0 {
+			return api.ImagePackages{}, fmt.Errorf("%s names no distro packages to match advisories against",
+				imageRef(repoName, tag, ""))
+		}
+		cached = img
+		return img, nil
+	}
+	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
+		img, err := resolve()
+		if err != nil {
+			return PageResult{}, err
+		}
+		page, err := client.ListAdvisoriesFiltered(api.AdvisoryFilter{
+			ComponentNames: img.Names,
+			Architecture:   img.Architecture,
+		}, pageOpts(token, pageSize, query, orderBy))
+		if err != nil {
+			return PageResult{}, err
+		}
+		res := toPageResult(page, advisoryRow)
+		res.Status = fmt.Sprintf("%d distro packages in %s %s (SBOM has %d)",
+			len(img.Names), imageRef(repoName, img.Tag, ""), img.Architecture, img.Total)
+		return res, nil
+	}
+	return newListPage("advisories", groupUID, advisoryCols(), load, nil).
+		WithLabel(imageRef(repoName, tag, "") + " advisories").
+		WithServerFilter().
+		WithServerSort(advisorySortFields()).
+		WithPageSize(25)
+}
+
+// describeImageError says what to do about a repo with no image under the tag,
+// which is the common failure here.
+func describeImageError(err error, repoName, tag string) error {
+	if !errors.Is(err, api.ErrNoImage) {
+		return err
+	}
+	return fmt.Errorf("%w — %s has no %s image. Open its tags to see what it does have", err, repoName, tag)
 }
 
 func formatBytes(n int64) string {

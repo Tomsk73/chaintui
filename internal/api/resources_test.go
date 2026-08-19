@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	librariesv2 "chainguard.dev/sdk/proto/chainguard/platform/libraries/v2beta1"
-	librariesv1 "chainguard.dev/sdk/proto/platform/libraries/v1"
 	vulnv2 "chainguard.dev/sdk/proto/chainguard/platform/vulnerabilities/v2beta1"
+	librariesv1 "chainguard.dev/sdk/proto/platform/libraries/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -138,7 +138,6 @@ func TestPageSlice(t *testing.T) {
 		t.Fatalf("last page: %+v", page)
 	}
 }
-
 
 func advisoryAt(i int) *vulnv2.Advisory {
 	return &vulnv2.Advisory{
@@ -290,5 +289,97 @@ func TestCollectAdvisoriesPageNonInternalError(t *testing.T) {
 	_, err := collectAdvisoriesPage(PageOpts{PageSize: 5}, fetch)
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestDistroPackageNames(t *testing.T) {
+	t.Parallel()
+	// APKs are kept, deduped and sorted; language-ecosystem packages are not
+	// advisory artifacts and are dropped.
+	got := distroPackageNames([]SBOMPackage{
+		{Name: "openssl", Purl: "pkg:apk/wolfi/openssl@3.1.4-r0"},
+		{Name: "glibc", Purl: "pkg:apk/wolfi/glibc@2.38-r0"},
+		{Name: "openssl", Purl: "pkg:apk/wolfi/openssl@3.1.4-r1"},
+		{Name: "golang.org/x/net", Purl: "pkg:golang/golang.org/x/net@v0.17.0"},
+		{Name: "", Purl: "pkg:apk/wolfi/@1"},
+	})
+	want := []string{"glibc", "openssl"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+
+	// An SBOM that carries PURLs but no APKs genuinely has no distro packages.
+	if got := distroPackageNames([]SBOMPackage{
+		{Name: "golang.org/x/net", Purl: "pkg:golang/golang.org/x/net@v0.17.0"},
+	}); len(got) != 0 {
+		t.Fatalf("got %v, want none", got)
+	}
+
+	// One with no PURLs at all is an unrecognised shape, so fall back to every
+	// name rather than silently filtering the page down to nothing.
+	if got := distroPackageNames([]SBOMPackage{{Name: "openssl"}, {Name: "glibc"}}); fmt.Sprint(got) != fmt.Sprint([]string{"glibc", "openssl"}) {
+		t.Fatalf("no-purl fallback: got %v", got)
+	}
+
+	if got := distroPackageNames(nil); len(got) != 0 {
+		t.Fatalf("got %v, want none", got)
+	}
+}
+
+func TestDigestForTag(t *testing.T) {
+	t.Parallel()
+	tags := []Tag{
+		{Name: "latest-dev", Digest: "sha256:dev"},
+		{Name: "latest", Digest: "sha256:abc"},
+	}
+	if got := digestForTag(tags, "latest"); got != "sha256:abc" {
+		t.Fatalf("got %q, want the exact match not the prefix one", got)
+	}
+	if got := digestForTag(tags, "1.2.3"); got != "" {
+		t.Fatalf("got %q for a missing tag", got)
+	}
+	if got := digestForTag([]Tag{{Name: "latest"}}, "latest"); got != "" {
+		t.Fatalf("a tag with no digest cannot resolve to an image, got %q", got)
+	}
+}
+
+// The advisory catalogue is global. Scoping the request to the caller's org
+// returned nothing at all, which is what made both advisory pages come up empty.
+func TestAdvisoryRequestIsNotOrgScoped(t *testing.T) {
+	t.Parallel()
+	req := advisoryRequest(AdvisoryFilter{}, PageOpts{Query: "nginx", OrderBy: "created_at desc"}, 25, 50)
+	if req.GetUidp() != nil {
+		t.Fatalf("uidp=%v, want none", req.GetUidp())
+	}
+	if req.GetQuery() != "nginx" || req.GetOrderBy() != "created_at desc" {
+		t.Fatalf("opts not carried: %+v", req)
+	}
+	if req.GetPageSize() != 25 || req.GetSkip() != 50 {
+		t.Fatalf("paging not carried: size=%d skip=%d", req.GetPageSize(), req.GetSkip())
+	}
+}
+
+func TestAdvisoryRequestFilter(t *testing.T) {
+	t.Parallel()
+	// component_names is the filter the server honours; artifact_names is
+	// accepted and then ignored, so nothing should ever set it.
+	req := advisoryRequest(AdvisoryFilter{
+		ComponentNames: []string{"glibc", "zlib"},
+		Architecture:   "x86_64",
+	}, PageOpts{}, 25, 0)
+	if fmt.Sprint(req.GetComponentNames()) != fmt.Sprint([]string{"glibc", "zlib"}) {
+		t.Fatalf("componentNames=%v", req.GetComponentNames())
+	}
+	if len(req.GetArtifactNames()) != 0 {
+		t.Fatalf("artifactNames=%v, but the server ignores that filter", req.GetArtifactNames())
+	}
+	if fmt.Sprint(req.GetArtifactArchitectures()) != fmt.Sprint([]string{"x86_64"}) {
+		t.Fatalf("arches=%v", req.GetArtifactArchitectures())
+	}
+
+	// No architecture means no filter, rather than an empty-string one that
+	// would match nothing.
+	if got := advisoryRequest(AdvisoryFilter{}, PageOpts{}, 25, 0).GetArtifactArchitectures(); len(got) != 0 {
+		t.Fatalf("arches=%v, want none", got)
 	}
 }
