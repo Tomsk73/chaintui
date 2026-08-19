@@ -27,6 +27,9 @@ type PageResult struct {
 	Rows          []RowData
 	NextPageToken string
 	TotalCount    int64 // 0 if unknown
+	// Status is an optional summary for the footer, e.g. a scan's severity
+	// counts and scanner version.
+	Status string
 }
 
 // LoadedMsg carries a freshly fetched page to the list page.
@@ -70,6 +73,10 @@ type ListPage struct {
 	boolToggleLabel string
 	boolToggle      *bool
 
+	// Optional secondary action on the selected row, alongside Enter.
+	rowActionKey string
+	rowActionFn  func(RowData) tea.Cmd
+
 	saveMode bool
 	saveIn   textinput.Model
 	// saveMsg is the shared status line for anything written to disk (save, export).
@@ -92,6 +99,9 @@ type ListPage struct {
 	sortAsc  bool
 
 	pageSize int
+
+	// status is the optional loader-supplied summary shown in the footer.
+	status string
 
 	// API cursor pagination state.
 	pageToken     string   // token used for the current page ("" = first)
@@ -279,6 +289,15 @@ func (p *ListPage) cancelExport() {
 	}
 }
 
+// WithRowAction binds a second key that acts on the selected row, for pages
+// where Enter already means something else (e.g. v for CVEs on repos, where
+// Enter drills into tags).
+func (p *ListPage) WithRowAction(key string, fn func(RowData) tea.Cmd) *ListPage {
+	p.rowActionKey = key
+	p.rowActionFn = fn
+	return p
+}
+
 func (p *ListPage) WithSave(fn func(filename string, rows []RowData) error) *ListPage {
 	si := textinput.New()
 	si.Placeholder = "filename..."
@@ -368,6 +387,7 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.pageToken = msg.RequestToken
 		p.nextPageToken = msg.NextPageToken
 		p.totalCount = msg.TotalCount
+		p.status = msg.Status
 		p.allRows = msg.Rows
 		p.applyFilter()
 		return p, nil
@@ -485,6 +505,12 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		default:
+			if p.rowActionFn != nil && p.rowActionKey != "" && msg.String() == p.rowActionKey {
+				if row, ok := p.selectedRow(); ok {
+					return p, p.rowActionFn(row)
+				}
+				return p, nil
+			}
 			if p.exportFn != nil && p.exportKey != "" && msg.String() == p.exportKey {
 				if p.exporting {
 					p.cancelExport()
@@ -717,6 +743,9 @@ func (p *ListPage) View() string {
 		bottom = cmdBarStyle.Render("/ " + p.filterIn.View() + hint)
 	default:
 		var parts []string
+		if p.status != "" {
+			parts = append(parts, p.status)
+		}
 		if p.sortCol >= 0 {
 			dir := "▲"
 			if !p.sortAsc {

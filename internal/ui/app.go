@@ -346,6 +346,12 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 	if resource == "roles" {
 		hints = append(hints, keyHint("c", "custom only"))
 	}
+	if resource == "repos" || resource == "tags" {
+		hints = append(hints, keyHint("v", "cves"))
+	}
+	if resource == "cves" {
+		hints = append(hints, keyHint("f", "fixable only"), keyHint("s", "save csv"))
+	}
 	if resource == "sbom" {
 		hints = append(hints, keyHint("s", "save csv"))
 	}

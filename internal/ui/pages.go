@@ -354,16 +354,28 @@ func NewReposPage(client *api.Client, groupUID string) *ListPage {
 		}), nil
 	}
 	enter := func(row RowData) tea.Cmd {
-		return pushPage(NewTagsPage(client, row.UID).WithLabel(row.Columns[0]))
+		return pushPage(NewTagsPage(client, row.UID, row.Columns[0]))
+	}
+	// v shows the CVE list for the repo's latest image; Enter is already taken by
+	// the tag list. Press v on a tag for a specific image.
+	cves := func(row RowData) tea.Cmd {
+		repo, ok := row.Raw.(api.Repo)
+		if !ok {
+			return nil
+		}
+		return pushPage(NewImageCVEsPage(client, repo.UID, repo.Name, "latest", ""))
 	}
 	return newListPage("repos", groupUID, cols, load, enter).
 		WithServerNameFilter().
-		WithServerSort(map[int]string{0: "name", 2: "create_time"})
+		WithServerSort(map[int]string{0: "name", 2: "create_time"}).
+		WithRowAction("v", cves)
 }
 
 // --- Tags ---
 
-func NewTagsPage(client *api.Client, repoUID string) *ListPage {
+// NewTagsPage lists a repo's tags. repoName labels the page and names the image
+// on the CVE list reached with v.
+func NewTagsPage(client *api.Client, repoUID, repoName string) *ListPage {
 	cols := []table.Column{
 		{Title: "NAME", Width: 30},
 		{Title: "DIGEST", Width: 40},
@@ -393,9 +405,19 @@ func NewTagsPage(client *api.Client, repoUID string) *ListPage {
 		}
 		return pushPage(NewSBOMPage(client, repoUID, tag.Name, tag.Digest).WithLabel(tag.Name + " sbom"))
 	}
+	// CVEs for this exact image, resolved by digest rather than by tag.
+	cves := func(row RowData) tea.Cmd {
+		tag, ok := row.Raw.(api.Tag)
+		if !ok {
+			return nil
+		}
+		return pushPage(NewImageCVEsPage(client, repoUID, repoName, tag.Name, tag.Digest))
+	}
 	return newListPage("tags", repoUID, cols, load, enter).
+		WithLabel(repoName).
 		WithServerNameFilter().
-		WithServerSort(map[int]string{0: "name", 2: "update_time"})
+		WithServerSort(map[int]string{0: "name", 2: "update_time"}).
+		WithRowAction("v", cves)
 }
 
 // --- SBOM ---
@@ -614,7 +636,7 @@ func NewChartsPage(client *api.Client, orgUID string) *ListPage {
 		if !ok {
 			return nil
 		}
-		return pushPage(NewTagsPage(client, chart.UID).WithLabel(chart.Name + " tags"))
+		return pushPage(NewTagsPage(client, chart.UID, chart.Name).WithLabel(chart.Name + " tags"))
 	}
 	return newListPage("charts", orgUID, cols, load, enter).
 		WithLabel("charts").
