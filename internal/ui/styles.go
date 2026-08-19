@@ -36,10 +36,16 @@ var (
 	keyStyle  = lipgloss.NewStyle().Foreground(cyan).Bold(true)
 	descStyle = lipgloss.NewStyle().Foreground(gray)
 
+	// Header and cell padding must match: the bubbles table sizes a cell as
+	// column width + the style's horizontal frame, so a header without the
+	// cells' padding leaves the two grids misaligned.
+	tableCellStyle = lipgloss.NewStyle().Padding(0, 1)
+
 	tableHeaderStyle = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(white).
-				Background(mid)
+				Background(mid).
+				Padding(0, 1)
 
 	selectedRowStyle = lipgloss.NewStyle().
 				Foreground(cyan).

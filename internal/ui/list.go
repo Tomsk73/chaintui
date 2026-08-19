@@ -140,6 +140,7 @@ func newListPage(
 	)
 	s := table.DefaultStyles()
 	s.Header = tableHeaderStyle
+	s.Cell = tableCellStyle
 	s.Selected = selectedRowStyle
 	t.SetStyles(s)
 
@@ -312,13 +313,17 @@ func (p *ListPage) SetSize(w, h int) {
 	p.height = h
 	p.table.SetWidth(w)
 	p.table.SetHeight(h - 1) // leave a line for filter/error
-	// Proportionally resize last column to fill width.
+	// Grow the last column so the row grid is exactly w cells wide: any less and
+	// the selected row's highlight stops short of the window edge, any more and
+	// it wraps onto the next line. Each cell occupies its column width plus the
+	// cell style's padding.
 	if len(p.cols) > 0 {
+		pad := tableCellStyle.GetHorizontalFrameSize()
 		used := 0
 		for _, c := range p.cols[:len(p.cols)-1] {
-			used += c.Width + 1
+			used += c.Width + pad
 		}
-		last := w - used - 2
+		last := w - used - pad
 		if last > 10 {
 			cols := make([]table.Column, len(p.cols))
 			copy(cols, p.cols)

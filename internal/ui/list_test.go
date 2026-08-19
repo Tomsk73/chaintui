@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func keyPress(r rune) tea.KeyMsg {
@@ -375,4 +376,31 @@ func TestWithBoolToggle(t *testing.T) {
 		t.Fatal("expected reload")
 	}
 	_ = loads
+}
+
+// The bubbles table styles the selected row before the viewport pads or
+// truncates it, so a row grid wider than the window wraps the highlight onto a
+// second line and a narrower one leaves it short of the right edge. Both the
+// header and the body grid must come out exactly window-wide.
+func TestTableGridFillsWindowWidth(t *testing.T) {
+	t.Parallel()
+	for _, width := range []int{80, 120, 200} {
+		p := testListPage(nil)
+		p.allRows = rows("alpine", "nginx")
+		p.applyFilter()
+		p.SetSize(width, 24)
+
+		// Rows are styled at grid width and only then clipped by the viewport,
+		// so measure the grid rather than the clipped output.
+		grid := 0
+		for _, c := range p.table.Columns() {
+			grid += c.Width + tableCellStyle.GetHorizontalFrameSize()
+		}
+		if grid != width {
+			t.Errorf("width %d: row grid is %d cells wide", width, grid)
+		}
+		if got := lipgloss.Width(strings.Split(p.table.View(), "\n")[0]); got != width {
+			t.Errorf("width %d: header is %d cells wide", width, got)
+		}
+	}
 }
