@@ -60,8 +60,23 @@ type App struct {
 	height  int
 	cmdMode bool
 	cmd     textinput.Model
-	orgCtx  string // active organisation UIDP
-	orgName string // display name for the active organisation
+	// quitting is set while the "are you sure" dialog is up; nothing has been
+	// torn down yet, so cancelling leaves the session exactly as it was.
+	quitting bool
+	orgCtx   string // active organisation UIDP
+	orgName  string // display name for the active organisation
+}
+
+// inputCapture is implemented by pages that own the keyboard while one of their
+// own prompts is open (filter, save, sort). The App defers its single-key
+// bindings to them so a keystroke meant for a text box is not read as a command.
+type inputCapture interface {
+	InputActive() bool
+}
+
+func (a App) inputActive() bool {
+	p, ok := a.top().(inputCapture)
+	return ok && p.InputActive()
 }
 
 func New(client *api.Client) App {
@@ -153,26 +168,31 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, page.Init()
 
 	case tea.KeyMsg:
+		if a.quitting {
+			return a.handleQuitKey(msg)
+		}
 		if a.cmdMode {
 			return a.handleCmdKey(msg)
 		}
-		switch msg.String() {
-		case "ctrl+c":
+		if msg.String() == "ctrl+c" {
 			return a, tea.Quit
-		case "q":
-			if len(a.stack) == 1 {
-				return a, tea.Quit
+		}
+		// A page owns the keyboard while one of its own prompts is open, so a
+		// single-key global does not swallow what the user is typing.
+		if !a.inputActive() {
+			switch msg.String() {
+			case "q":
+				a.quitting = true
+				return a, nil
+			case "esc":
+				a.pop()
+				return a, nil
+			case ":":
+				a.cmdMode = true
+				a.cmd.SetValue("")
+				a.cmd.Focus()
+				return a, textinput.Blink
 			}
-			a.pop()
-			return a, nil
-		case "esc":
-			a.pop()
-			return a, nil
-		case ":":
-			a.cmdMode = true
-			a.cmd.SetValue("")
-			a.cmd.Focus()
-			return a, textinput.Blink
 		}
 	}
 
@@ -182,6 +202,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	newStack[len(newStack)-1] = updated.(Page)
 	a.stack = newStack
 	return a, cmd
+}
+
+// handleQuitKey drives the quit confirmation. Only an explicit yes quits;
+// unrecognised keys are ignored rather than treated as either answer.
+func (a App) handleQuitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y", "enter", "ctrl+c":
+		return a, tea.Quit
+	case "n", "N", "esc":
+		a.quitting = false
+		return a, nil
+	}
+	return a, nil
 }
 
 func (a App) handleCmdKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -221,7 +254,11 @@ func (a App) View() string {
 	} else {
 		footer = renderFooter(a.width, top.ResourceType(), len(a.stack) > 1)
 	}
-	return strings.Join([]string{header, content, footer}, "\n")
+	view := strings.Join([]string{header, content, footer}, "\n")
+	if a.quitting {
+		return overlayCenter(view, quitDialog())
+	}
+	return view
 }
 
 func (a App) breadcrumb() string {

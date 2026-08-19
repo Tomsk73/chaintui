@@ -52,6 +52,19 @@ var (
 				Background(navy).
 				Bold(true)
 
+	dialogStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(cyan).
+			Background(navy).
+			Padding(1, 4)
+
+	// Every span inside the dialog carries the panel background: lipgloss does
+	// not re-open an outer background after a nested style resets, so text left
+	// unstyled here would punch a hole in the panel.
+	dialogTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(white).Background(navy)
+	dialogKeyStyle   = lipgloss.NewStyle().Bold(true).Foreground(cyan).Background(navy)
+	dialogDescStyle  = lipgloss.NewStyle().Foreground(gray).Background(navy)
+
 	borderColor = gray
 )
 

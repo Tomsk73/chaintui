@@ -333,6 +333,12 @@ func (p *ListPage) SetSize(w, h int) {
 	}
 }
 
+// InputActive reports whether one of this page's own prompts is open, in which
+// case it, not the App, should receive plain keystrokes.
+func (p *ListPage) InputActive() bool {
+	return p.filterMode || p.saveMode || p.sortMode
+}
+
 func (p *ListPage) Init() tea.Cmd {
 	return tea.Batch(p.spinner.Tick, p.doLoad(""))
 }
@@ -824,8 +830,8 @@ func (d *detailPage) Init() tea.Cmd         { return nil }
 
 func (d *detailPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(tea.KeyMsg); ok {
-		switch msg.String() {
-		case "esc", "q":
+		// q is the global quit binding, so esc is the only way back from here.
+		if msg.String() == "esc" {
 			return d, func() tea.Msg { return PopMsg{} }
 		}
 	}

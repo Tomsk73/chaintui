@@ -118,3 +118,127 @@ func TestFooterHintsPerResource(t *testing.T) {
 		t.Fatalf("repos footer should not offer export: %s", got)
 	}
 }
+
+// sized returns an app that has been told the window size, so View renders.
+func sized(a App) App {
+	m, _ := a.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	return m.(App)
+}
+
+func TestQuitAsksForConfirmation(t *testing.T) {
+	t.Parallel()
+	a := sized(New(nil))
+	m, cmd := a.Update(keyPress('q'))
+	a = m.(App)
+	if cmd != nil {
+		t.Fatal("q must not quit on its own")
+	}
+	if !a.quitting {
+		t.Fatal("q should open the confirmation")
+	}
+	if !strings.Contains(a.View(), "Quit chaintui?") {
+		t.Fatalf("dialog not rendered:\n%s", a.View())
+	}
+
+	// Cancelling leaves the session untouched.
+	m, cmd = a.Update(keyPress('n'))
+	a = m.(App)
+	if a.quitting || cmd != nil {
+		t.Fatal("n should dismiss the dialog without quitting")
+	}
+	if strings.Contains(a.View(), "Quit chaintui?") {
+		t.Fatal("dialog still rendered after cancel")
+	}
+}
+
+func TestQuitConfirmKeys(t *testing.T) {
+	t.Parallel()
+	quits := map[string]tea.KeyMsg{
+		"y":     keyPress('y'),
+		"Y":     keyPress('Y'),
+		"enter": {Type: tea.KeyEnter},
+	}
+	for name, key := range quits {
+		a := sized(New(nil))
+		a.quitting = true
+		_, cmd := a.Update(key)
+		if cmd == nil {
+			t.Fatalf("%s: expected a quit cmd", name)
+		}
+		if _, ok := cmd().(tea.QuitMsg); !ok {
+			t.Fatalf("%s: cmd is not tea.Quit", name)
+		}
+	}
+
+	// esc cancels; an unrecognised key is neither answer.
+	for name, key := range map[string]tea.KeyMsg{"esc": {Type: tea.KeyEsc}, "n": keyPress('n')} {
+		a := sized(New(nil))
+		a.quitting = true
+		m, cmd := a.Update(key)
+		if m.(App).quitting || cmd != nil {
+			t.Fatalf("%s should cancel", name)
+		}
+	}
+	a := sized(New(nil))
+	a.quitting = true
+	m, cmd := a.Update(keyPress('z'))
+	if !m.(App).quitting || cmd != nil {
+		t.Fatal("an unrecognised key should leave the dialog up")
+	}
+}
+
+func TestQuitFromNestedPageDoesNotPop(t *testing.T) {
+	t.Parallel()
+	a := sized(New(nil))
+	m, _ := a.Update(SelectOrgMsg{UID: "org/1", Name: "acme"})
+	a = m.(App)
+	if len(a.stack) != 2 {
+		t.Fatalf("stack=%d", len(a.stack))
+	}
+	// q used to mean "back" on a nested page; it now offers to quit, and esc is
+	// the way back.
+	m, _ = a.Update(keyPress('q'))
+	a = m.(App)
+	if !a.quitting || len(a.stack) != 2 {
+		t.Fatalf("quitting=%v stack=%d", a.quitting, len(a.stack))
+	}
+	m, _ = a.Update(keyPress('n'))
+	a = m.(App)
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if len(m.(App).stack) != 1 {
+		t.Fatalf("esc should still pop, stack=%d", len(m.(App).stack))
+	}
+}
+
+func TestPagePromptKeepsItsKeystrokes(t *testing.T) {
+	t.Parallel()
+	a := sized(New(nil))
+	page := testListPage(nil)
+	m, _ := a.Update(PushMsg{P: page})
+	a = m.(App)
+
+	m, _ = a.Update(keyPress('/'))
+	a = m.(App)
+	if !a.inputActive() {
+		t.Fatal("filter prompt should be capturing keys")
+	}
+	// q, esc and : belong to the filter box while it is open.
+	for _, r := range []rune{'q', 'u', 'x'} {
+		m, _ = a.Update(keyPress(r))
+		a = m.(App)
+	}
+	if a.quitting {
+		t.Fatal("typing q into a filter must not offer to quit")
+	}
+	if got := page.filterIn.Value(); got != "qux" {
+		t.Fatalf("filter value=%q, want the typed text", got)
+	}
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	a = m.(App)
+	if len(a.stack) != 2 {
+		t.Fatal("esc should close the filter, not pop the page")
+	}
+	if a.inputActive() {
+		t.Fatal("filter should be closed")
+	}
+}
