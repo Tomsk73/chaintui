@@ -117,9 +117,12 @@ type IdentityStaticKeys struct {
 }
 
 type Role struct {
-	UID          string    `json:"uid"`
-	Name         string    `json:"name"`
-	Description  string    `json:"description"`
+	UID         string `json:"uid"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// Managed is true for Chainguard's built-in roles, which live outside the
+	// group hierarchy and are bindable in any org.
+	Managed      bool      `json:"managed"`
 	Capabilities []string  `json:"capabilities"`
 	CreateTime   time.Time `json:"createTime"`
 	UpdateTime   time.Time `json:"updateTime"`

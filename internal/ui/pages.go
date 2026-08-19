@@ -215,32 +215,42 @@ func NewIdentitiesPage(client *api.Client, groupUID string) *ListPage {
 
 // --- Roles ---
 
+// NewRolesPage lists the roles bindable in a group: its own custom roles first,
+// then Chainguard's built-in ones. `c` hides the built-ins.
 func NewRolesPage(client *api.Client, groupUID string) *ListPage {
 	cols := []table.Column{
-		{Title: "NAME", Width: 30},
-		{Title: "CAPABILITIES", Width: 40},
-		{Title: "CREATED", Width: 14},
+		{Title: "NAME", Width: 34},
+		{Title: "TYPE", Width: 8},
+		{Title: "CAPABILITIES", Width: 44},
+		{Title: "DESCRIPTION", Width: 30},
 	}
+	customOnly := false
 	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
-		page, err := client.ListRoles(groupUID, pageOpts(token, pageSize, query, orderBy))
+		page, err := client.ListRoles(groupUID, pageOpts(token, pageSize, query, orderBy), customOnly)
 		if err != nil {
 			return PageResult{}, err
 		}
 		return toPageResult(page, func(v api.Role) RowData {
-			caps := strings.Join(v.Capabilities, ", ")
-			if len(caps) > 38 {
-				caps = caps[:35] + "..."
+			kind := "custom"
+			if v.Managed {
+				kind = "built-in"
 			}
 			return RowData{
-				UID:     v.UID,
-				Columns: []string{v.Name, caps, relativeTime(v.CreateTime)},
-				Raw:     v,
+				UID: v.UID,
+				Columns: []string{
+					v.Name,
+					kind,
+					truncate(strings.Join(v.Capabilities, ", "), 120),
+					truncate(v.Description, 60),
+				},
+				Raw: v,
 			}
 		}), nil
 	}
+	// Roles are merged from two scopes and paged locally, so sorting stays local too.
 	return newListPage("roles", groupUID, cols, load, nil).
 		WithServerNameFilter().
-		WithServerSort(map[int]string{0: "name", 2: "create_time"})
+		WithBoolToggle("c", "custom only", &customOnly)
 }
 
 // --- RoleBindings ---

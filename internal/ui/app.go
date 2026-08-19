@@ -343,6 +343,9 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 	if resource == "blocked" {
 		hints = append(hints, keyHint("l", "log mode"))
 	}
+	if resource == "roles" {
+		hints = append(hints, keyHint("c", "custom only"))
+	}
 	if resource == "sbom" {
 		hints = append(hints, keyHint("s", "save csv"))
 	}

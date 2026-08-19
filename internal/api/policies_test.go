@@ -3,6 +3,8 @@ package api
 import (
 	"fmt"
 	"testing"
+
+	capabilities "chainguard.dev/sdk/proto/capabilities"
 )
 
 func TestChartCatalogFolder(t *testing.T) {
@@ -97,5 +99,46 @@ func TestUnescapePURLPart(t *testing.T) {
 		if got := unescapePURLPart(in); got != want {
 			t.Errorf("unescapePURLPart(%q)=%q want %q", in, got, want)
 		}
+	}
+}
+
+func TestCapabilityNameFormatting(t *testing.T) {
+	t.Parallel()
+	cases := map[capabilities.Capability]string{
+		capabilities.Capability_CAP_ADVISORIES_CREATE: "advisories.create",
+		capabilities.Capability_CAP_INTERNAL:          "internal",
+	}
+	for in, want := range cases {
+		if got := capabilityName(in); got != want {
+			t.Errorf("capabilityName(%v)=%q want %q", in, got, want)
+		}
+	}
+}
+
+func TestRoleScopeHelpers(t *testing.T) {
+	t.Parallel()
+	// Built-in roles are root-level UIDPs; an org's roles are nested under it.
+	if !isManagedRole("8ded3b7af5361980a27e53bd8b09e644c04a34cd") {
+		t.Error("root-level UIDP should be managed")
+	}
+	if isManagedRole("org1/7991174e62b8a4e7") {
+		t.Error("nested UIDP should not be managed")
+	}
+
+	if !inGroup("org1/role1", "org1") {
+		t.Error("direct child should be in group")
+	}
+	if !inGroup("org1/folder/role1", "org1") {
+		t.Error("nested role should be in group")
+	}
+	if inGroup("org2/role1", "org1") {
+		t.Error("another org's role should not be in group")
+	}
+	// A UIDP that merely shares a prefix is not inside the group.
+	if inGroup("org1extra/role1", "org1") {
+		t.Error("prefix collision should not match")
+	}
+	if !inGroup("anything", "") {
+		t.Error("no group selected should match everything")
 	}
 }

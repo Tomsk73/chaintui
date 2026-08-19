@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	capabilities "chainguard.dev/sdk/proto/capabilities"
 	iamv2 "chainguard.dev/sdk/proto/chainguard/platform/iam/v2beta1"
 	registryv2 "chainguard.dev/sdk/proto/chainguard/platform/registry/v2beta1"
 	vulnv2 "chainguard.dev/sdk/proto/chainguard/platform/vulnerabilities/v2beta1"
@@ -175,39 +176,90 @@ func (c *Client) ListIdentities(groupUID string, opts PageOpts) (Page[Identity],
 	}, nil
 }
 
-func (c *Client) ListRoles(groupUID string, opts PageOpts) (Page[Role], error) {
-	ctx := context.Background()
-	req := &iamv2.ListRolesRequest{
-		PageSize:  opts.size(),
-		PageToken: opts.PageToken,
-		OrderBy:   opts.OrderBy,
-		Name:      exactName(opts),
+// capabilityName renders a capability enum in the form Chainguard documents and
+// chainctl accepts: CAP_ARGOS_DOCUMENTS_CREATE -> argos.documents.create.
+func capabilityName(c capabilities.Capability) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(c.String(), "CAP_")), "_", ".")
+}
+
+// isManagedRole reports whether a role UIDP is root-level, i.e. one of
+// Chainguard's built-in roles rather than an org's own.
+func isManagedRole(uid string) bool {
+	return !strings.Contains(uid, "/")
+}
+
+// inGroup reports whether a UIDP sits anywhere under groupUID. An empty group
+// matches everything (no org selected).
+func inGroup(uid, groupUID string) bool {
+	if groupUID == "" {
+		return true
 	}
-	req.Uidp = uidpScope(groupUID)
-	resp, err := c.v2.IAM().RolesService().ListRoles(ctx, req)
+	return strings.HasPrefix(uid, groupUID+"/")
+}
+
+// ListRoles returns the roles that can be bound in a group: the group's own
+// custom roles plus Chainguard's managed (built-in) roles.
+//
+// Built-in roles live outside the group hierarchy — their UIDP has no parent —
+// so neither uidp.descendantsOf nor uidp.inRoot matches them, and an org with no
+// custom roles would otherwise show an empty page. This lists unfiltered and
+// keeps root-level roles plus anything under groupUID. Roles number in the tens,
+// so the merged list is sorted (custom first) and paged locally.
+//
+// customOnly drops the built-ins, leaving just the group's own roles.
+func (c *Client) ListRoles(groupUID string, opts PageOpts, customOnly bool) (Page[Role], error) {
+	ctx := context.Background()
+	all, err := collectPages(ctx, func(token string) (Page[Role], error) {
+		resp, err := c.v2.IAM().RolesService().ListRoles(ctx, &iamv2.ListRolesRequest{
+			PageSize:  MaxPageSize,
+			PageToken: token,
+			Name:      exactName(opts),
+		})
+		if err != nil {
+			return Page[Role]{}, err
+		}
+		items := make([]Role, len(resp.GetRoles()))
+		for i, v := range resp.GetRoles() {
+			caps := make([]string, len(v.GetCapabilities()))
+			for j, capability := range v.GetCapabilities() {
+				caps[j] = capabilityName(capability)
+			}
+			items[i] = Role{
+				UID:          v.GetUid(),
+				Name:         v.GetName(),
+				Description:  v.GetDescription(),
+				Managed:      isManagedRole(v.GetUid()),
+				Capabilities: caps,
+				CreateTime:   tsTime(v.GetCreateTime()),
+				UpdateTime:   tsTime(v.GetUpdateTime()),
+			}
+		}
+		return Page[Role]{
+			Items:         items,
+			NextPageToken: resp.GetNextPageToken(),
+			TotalCount:    resp.GetTotalCount(),
+		}, nil
+	}, nil)
 	if err != nil {
 		return Page[Role]{}, err
 	}
-	out := make([]Role, len(resp.GetRoles()))
-	for i, v := range resp.GetRoles() {
-		caps := make([]string, len(v.GetCapabilities()))
-		for j, cap := range v.GetCapabilities() {
-			caps[j] = cap.String()
+	out := make([]Role, 0, len(all))
+	for _, r := range all {
+		if r.Managed && customOnly {
+			continue
 		}
-		out[i] = Role{
-			UID:          v.GetUid(),
-			Name:         v.GetName(),
-			Description:  v.GetDescription(),
-			Capabilities: caps,
-			CreateTime:   tsTime(v.GetCreateTime()),
-			UpdateTime:   tsTime(v.GetUpdateTime()),
+		if r.Managed || inGroup(r.UID, groupUID) {
+			out = append(out, r)
 		}
 	}
-	return Page[Role]{
-		Items:         out,
-		NextPageToken: resp.GetNextPageToken(),
-		TotalCount:    resp.GetTotalCount(),
-	}, nil
+	// The org's own roles first — the built-ins are the same everywhere.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Managed != out[j].Managed {
+			return !out[i].Managed
+		}
+		return out[i].Name < out[j].Name
+	})
+	return pageSlice(out, opts), nil
 }
 
 func (c *Client) ListRoleBindings(groupUID string, opts PageOpts) (Page[RoleBinding], error) {

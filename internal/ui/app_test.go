@@ -106,6 +106,13 @@ func TestFooterHintsPerResource(t *testing.T) {
 			t.Fatalf("artifacts footer missing %q: %s", want, artifacts)
 		}
 	}
+	if got := renderFooter(200, "roles", true); !strings.Contains(got, "custom only") {
+		t.Fatalf("roles footer missing the built-in toggle: %s", got)
+	}
+	if got := renderFooter(200, "blocked", true); !strings.Contains(got, "log mode") {
+		t.Fatalf("blocked footer missing the mode toggle: %s", got)
+	}
+
 	// The export sweep is libraries-only; other pages should not advertise it.
 	if got := renderFooter(200, "repos", true); strings.Contains(got, "export json") {
 		t.Fatalf("repos footer should not offer export: %s", got)
