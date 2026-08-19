@@ -495,8 +495,8 @@ func advisoryCols() []table.Column {
 	return []table.Column{
 		{Title: "ID", Width: 20},
 		{Title: "ARTIFACT", Width: 30},
+		{Title: "STATUS", Width: 21},
 		{Title: "ALIASES", Width: 40},
-		{Title: "CREATED", Width: 14},
 	}
 }
 
@@ -507,23 +507,29 @@ func advisoryRow(v api.Advisory) RowData {
 	}
 	return RowData{
 		UID:     v.UID,
-		Columns: []string{id, v.ArtifactName, strings.Join(v.Aliases, ", "), relativeTime(v.CreateTime)},
+		Columns: []string{id, v.ArtifactName, dash(v.Status().Label()), strings.Join(v.Aliases, ", ")},
 		Raw:     v,
 	}
 }
 
-// advisorySortFields maps the only column the API can sort on. It rejects
-// anything but uid and created_at with InvalidArgument, so the other columns
-// fall back to sorting the current page locally.
-func advisorySortFields() map[int]string {
-	return map[int]string{3: "created_at"}
+// advisoryOrder defaults the feed to newest-first. The API's own default is
+// "uid asc", which reads as random, and no column maps to a server sort now that
+// the list shows status rather than the created date.
+//
+// created_at is one of only two order_by fields the API accepts (the other is
+// uid); it rejects everything else with InvalidArgument.
+func advisoryOrder(orderBy string) string {
+	if orderBy == "" {
+		return "created_at desc"
+	}
+	return orderBy
 }
 
 // NewAdvisoriesPage lists the Chainguard advisory catalogue. groupUID is the
 // page's navigation context only: advisories are global, not org-scoped.
 func NewAdvisoriesPage(client *api.Client, groupUID string) *ListPage {
 	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
-		page, err := client.ListAdvisories(pageOpts(token, pageSize, query, orderBy))
+		page, err := client.ListAdvisories(pageOpts(token, pageSize, query, advisoryOrder(orderBy)))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -533,7 +539,6 @@ func NewAdvisoriesPage(client *api.Client, groupUID string) *ListPage {
 	}
 	return newListPage("advisories", groupUID, advisoryCols(), load, nil).
 		WithServerFilter().
-		WithServerSort(advisorySortFields()).
 		WithPageSize(25)
 }
 
@@ -576,7 +581,7 @@ func NewImageAdvisoriesPage(client *api.Client, groupUID, repoUID, repoName, tag
 		page, err := client.ListAdvisoriesFiltered(api.AdvisoryFilter{
 			ComponentNames: img.Names,
 			Architecture:   img.Architecture,
-		}, pageOpts(token, pageSize, query, orderBy))
+		}, pageOpts(token, pageSize, query, advisoryOrder(orderBy)))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -588,7 +593,6 @@ func NewImageAdvisoriesPage(client *api.Client, groupUID, repoUID, repoName, tag
 	return newListPage("advisories", groupUID, advisoryCols(), load, nil).
 		WithLabel(imageRef(repoName, tag, "") + " advisories").
 		WithServerFilter().
-		WithServerSort(advisorySortFields()).
 		WithPageSize(25)
 }
 

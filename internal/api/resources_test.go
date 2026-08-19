@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	librariesv2 "chainguard.dev/sdk/proto/chainguard/platform/libraries/v2beta1"
 	vulnv2 "chainguard.dev/sdk/proto/chainguard/platform/vulnerabilities/v2beta1"
@@ -381,5 +382,64 @@ func TestAdvisoryRequestFilter(t *testing.T) {
 	// would match nothing.
 	if got := advisoryRequest(AdvisoryFilter{}, PageOpts{}, 25, 0).GetArtifactArchitectures(); len(got) != 0 {
 		t.Fatalf("arches=%v, want none", got)
+	}
+}
+
+func TestAdvisoryStatus(t *testing.T) {
+	t.Parallel()
+	at := func(h int) time.Time { return time.Date(2026, 8, 1, h, 0, 0, 0, time.UTC) }
+
+	// The status is the most recent approved event.
+	a := Advisory{Events: []AdvisoryEvent{
+		{Type: AdvisoryEventTypeDetection, ReviewState: ReviewStateApproved, CreateTime: at(1)},
+		{Type: AdvisoryEventTypeFixed, ReviewState: ReviewStateApproved, CreateTime: at(2)},
+	}}
+	if got := a.Status(); got != AdvisoryEventTypeFixed {
+		t.Errorf("got %q, want fixed", got)
+	}
+	if got := a.Status().Label(); got != "Fixed" {
+		t.Errorf("label=%q", got)
+	}
+
+	// Pending and rejected events do not count: an advisory whose
+	// false-positive claim was rejected is not a false positive. This mirrors
+	// CGA-9644-6q9c-r6j6, which the API itself classifies by its last approved
+	// event despite later rejected ones.
+	rejected := Advisory{Events: []AdvisoryEvent{
+		{Type: AdvisoryEventTypeDetection, ReviewState: ReviewStateApproved, CreateTime: at(1)},
+		{Type: AdvisoryEventTypeFixed, ReviewState: ReviewStateApproved, CreateTime: at(2)},
+		{Type: AdvisoryEventTypeFalsePositive, ReviewState: ReviewStateRejected, CreateTime: at(3)},
+		{Type: AdvisoryEventTypePendingUpstreamFix, ReviewState: ReviewStatePending, CreateTime: at(4)},
+	}}
+	if got := rejected.Status(); got != AdvisoryEventTypeFixed {
+		t.Errorf("got %q, want the last approved event", got)
+	}
+
+	// Out-of-order events still resolve to the newest.
+	unordered := Advisory{Events: []AdvisoryEvent{
+		{Type: AdvisoryEventTypePatched, ReviewState: ReviewStateApproved, CreateTime: at(5)},
+		{Type: AdvisoryEventTypeDetection, ReviewState: ReviewStateApproved, CreateTime: at(1)},
+	}}
+	if got := unordered.Status(); got != AdvisoryEventTypePatched {
+		t.Errorf("got %q, want patched", got)
+	}
+
+	// A detection nobody has ruled on is still being triaged.
+	detected := Advisory{Events: []AdvisoryEvent{
+		{Type: AdvisoryEventTypeDetection, ReviewState: ReviewStateApproved, CreateTime: at(1)},
+	}}
+	if got := detected.Status().Label(); got != "Under Investigation" {
+		t.Errorf("label=%q", got)
+	}
+
+	// Nothing to go on.
+	if got := (Advisory{}).Status(); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+	if got := (Advisory{Events: []AdvisoryEvent{{Type: AdvisoryEventTypeFixed, ReviewState: ReviewStatePending}}}).Status(); got != "" {
+		t.Errorf("a pending-only advisory should have no status, got %q", got)
+	}
+	if got := AdvisoryEventType("something_new").Label(); got != "" {
+		t.Errorf("unknown type should render blank, got %q", got)
 	}
 }

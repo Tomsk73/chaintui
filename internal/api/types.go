@@ -332,8 +332,74 @@ type Advisory struct {
 	DeleteTime           *time.Time      `json:"deleteTime,omitempty"`
 }
 
+// AdvisoryEventType names the kind of an advisory event — the oneof arm the
+// API set on it.
+// Status is where the advisory currently stands: the kind of its most recent
+// approved event. Pending and rejected events are ignored — an advisory whose
+// false-positive claim was rejected is not a false positive — which matches how
+// the API's own latest_event_type filter classifies records.
+//
+// Returns "" when there is nothing to go on, e.g. a record whose events the
+// caller did not fetch.
+func (a Advisory) Status() AdvisoryEventType {
+	var latest AdvisoryEvent
+	var found bool
+	for _, e := range a.Events {
+		if e.ReviewState != ReviewStateApproved || e.Type == "" {
+			continue
+		}
+		// Events arrive oldest-first, but do not rely on it.
+		if !found || e.CreateTime.After(latest.CreateTime) || e.CreateTime.Equal(latest.CreateTime) {
+			latest, found = e, true
+		}
+	}
+	return latest.Type
+}
+
+// AdvisoryEventType names the kind of an advisory event — the oneof arm the
+// API set on it.
+type AdvisoryEventType string
+
+const (
+	AdvisoryEventTypeDetection          AdvisoryEventType = "detection"
+	AdvisoryEventTypeTruePositive       AdvisoryEventType = "true_positive"
+	AdvisoryEventTypeFalsePositive      AdvisoryEventType = "false_positive"
+	AdvisoryEventTypeFixed              AdvisoryEventType = "fixed"
+	AdvisoryEventTypePatched            AdvisoryEventType = "patched"
+	AdvisoryEventTypeFixNotPlanned      AdvisoryEventType = "fix_not_planned"
+	AdvisoryEventTypeAnalysisNotPlanned AdvisoryEventType = "analysis_not_planned"
+	AdvisoryEventTypePendingUpstreamFix AdvisoryEventType = "pending_upstream_fix"
+)
+
+// Label is how an event type reads in the UI.
+func (t AdvisoryEventType) Label() string {
+	switch t {
+	case AdvisoryEventTypeDetection:
+		// A detection nobody has ruled on yet is still being triaged.
+		return "Under Investigation"
+	case AdvisoryEventTypeTruePositive:
+		return "True Positive"
+	case AdvisoryEventTypeFalsePositive:
+		return "False Positive"
+	case AdvisoryEventTypeFixed:
+		return "Fixed"
+	case AdvisoryEventTypePatched:
+		return "Patched"
+	case AdvisoryEventTypeFixNotPlanned:
+		return "Fix Not Planned"
+	case AdvisoryEventTypeAnalysisNotPlanned:
+		return "Analysis Not Planned"
+	case AdvisoryEventTypePendingUpstreamFix:
+		return "Pending Upstream Fix"
+	default:
+		return ""
+	}
+}
+
 type AdvisoryEvent struct {
-	UID                        string                           `json:"uid"`
+	UID string `json:"uid"`
+	// Type is the kind of event, mirroring which payload field below is set.
+	Type                       AdvisoryEventType                `json:"type"`
 	Author                     string                           `json:"author"`
 	Reviewer                   string                           `json:"reviewer,omitempty"`
 	ReviewState                ReviewState                      `json:"reviewState"`

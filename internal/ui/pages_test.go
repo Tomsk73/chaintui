@@ -151,18 +151,47 @@ func TestDescribeImageError(t *testing.T) {
 	}
 }
 
-// The API rejects any order_by but uid and created_at with InvalidArgument, so
-// the advisory pages must not offer the others as server sorts.
-func TestAdvisorySortFieldsAreAccepted(t *testing.T) {
+// The API accepts only uid and created_at as order_by, rejecting anything else
+// with InvalidArgument, and its own default of "uid asc" reads as random.
+func TestAdvisoryOrder(t *testing.T) {
 	t.Parallel()
-	valid := map[string]bool{"uid": true, "created_at": true}
-	for col, field := range advisorySortFields() {
-		if !valid[field] {
-			t.Errorf("column %d maps to %q, which the API rejects", col, field)
+	if got := advisoryOrder(""); got != "created_at desc" {
+		t.Errorf("default order = %q, want the newest advisories first", got)
+	}
+	if got := advisoryOrder("uid asc"); got != "uid asc" {
+		t.Errorf("an explicit order should win, got %q", got)
+	}
+}
+
+func TestAdvisoryRowShowsStatus(t *testing.T) {
+	t.Parallel()
+	cols := advisoryCols()
+	if cols[2].Title != "STATUS" {
+		t.Fatalf("column 2 is %q, want STATUS", cols[2].Title)
+	}
+	for _, c := range cols {
+		if c.Title == "CREATED" {
+			t.Fatal("the created date column should be gone")
 		}
 	}
-	// CREATED is the column that field belongs to.
-	if advisorySortFields()[3] != "created_at" {
-		t.Errorf("CREATED should sort server-side, got %q", advisorySortFields()[3])
+
+	at := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	row := advisoryRow(api.Advisory{
+		AdvisoryID:   "CGA-1234",
+		ArtifactName: "openssl",
+		Aliases:      []string{"CVE-2026-1", "GHSA-x"},
+		Events: []api.AdvisoryEvent{
+			{Type: api.AdvisoryEventTypeDetection, ReviewState: api.ReviewStateApproved, CreateTime: at},
+			{Type: api.AdvisoryEventTypeFixed, ReviewState: api.ReviewStateApproved, CreateTime: at.Add(time.Hour)},
+		},
+	})
+	want := []string{"CGA-1234", "openssl", "Fixed", "CVE-2026-1, GHSA-x"}
+	if fmt.Sprint(row.Columns) != fmt.Sprint(want) {
+		t.Fatalf("row=%v, want %v", row.Columns, want)
+	}
+
+	// An advisory with no events to go on still renders a cell.
+	if got := advisoryRow(api.Advisory{AdvisoryID: "CGA-2"}).Columns[2]; got != "-" {
+		t.Fatalf("unknown status rendered as %q", got)
 	}
 }

@@ -675,9 +675,91 @@ func mapAdvisory(v *vulnv2.Advisory) Advisory {
 		ComponentLocation:    v.GetComponentLocation(),
 		ComponentType:        v.GetComponentType(),
 		Author:               v.GetAuthor(),
+		Events:               mapAdvisoryEvents(v.GetEvents()),
 		CreateTime:           tsTime(v.GetCreateTime()),
 		UpdateTime:           tsTime(v.GetUpdateTime()),
 	}
+}
+
+func mapAdvisoryEvents(in []*vulnv2.AdvisoryEvent) []AdvisoryEvent {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]AdvisoryEvent, 0, len(in))
+	for _, e := range in {
+		out = append(out, mapAdvisoryEvent(e))
+	}
+	return out
+}
+
+func mapAdvisoryEvent(e *vulnv2.AdvisoryEvent) AdvisoryEvent {
+	out := AdvisoryEvent{
+		UID:         e.GetUid(),
+		Author:      e.GetAuthor(),
+		Reviewer:    e.GetReviewer(),
+		ReviewState: ReviewState(e.GetReviewState().String()),
+		Issue:       e.GetIssue(),
+		Findings:    e.GetFindings(),
+		CreateTime:  tsTime(e.GetCreateTime()),
+	}
+	// The oneof arm is both the event's type and its payload.
+	switch t := e.GetType().(type) {
+	case *vulnv2.AdvisoryEvent_Detection_:
+		out.Type = AdvisoryEventTypeDetection
+		out.Detection = mapAdvisoryDetection(t.Detection)
+	case *vulnv2.AdvisoryEvent_TruePositiveDetermination_:
+		out.Type = AdvisoryEventTypeTruePositive
+		out.TruePositiveDetermination = &AdvisoryEventTruePositive{Note: t.TruePositiveDetermination.GetNote()}
+	case *vulnv2.AdvisoryEvent_FalsePositiveDetermination_:
+		out.Type = AdvisoryEventTypeFalsePositive
+		out.FalsePositiveDetermination = &AdvisoryEventFalsePositive{
+			Type: t.FalsePositiveDetermination.GetType().String(),
+			Note: t.FalsePositiveDetermination.GetNote(),
+		}
+	case *vulnv2.AdvisoryEvent_Fixed_:
+		out.Type = AdvisoryEventTypeFixed
+		out.Fixed = &AdvisoryEventFixed{FixedVersion: t.Fixed.GetFixedVersion(), Note: t.Fixed.GetNote()}
+	case *vulnv2.AdvisoryEvent_Patched_:
+		out.Type = AdvisoryEventTypePatched
+		out.Patched = &AdvisoryEventPatched{PatchedVersions: t.Patched.GetPatchedVersions(), Note: t.Patched.GetNote()}
+	case *vulnv2.AdvisoryEvent_FixNotPlanned_:
+		out.Type = AdvisoryEventTypeFixNotPlanned
+		out.FixNotPlanned = &AdvisoryEventFixNotPlanned{Note: t.FixNotPlanned.GetNote()}
+	case *vulnv2.AdvisoryEvent_AnalysisNotPlanned_:
+		out.Type = AdvisoryEventTypeAnalysisNotPlanned
+		out.AnalysisNotPlanned = &AdvisoryEventAnalysisNotPlanned{Note: t.AnalysisNotPlanned.GetNote()}
+	case *vulnv2.AdvisoryEvent_PendingUpstreamFix_:
+		out.Type = AdvisoryEventTypePendingUpstreamFix
+		out.PendingUpstreamFix = &AdvisoryEventPendingUpstreamFix{Note: t.PendingUpstreamFix.GetNote()}
+	}
+	return out
+}
+
+func mapAdvisoryDetection(d *vulnv2.AdvisoryEvent_Detection) *AdvisoryEventDetection {
+	if d == nil {
+		return nil
+	}
+	out := &AdvisoryEventDetection{}
+	switch t := d.GetType().(type) {
+	case *vulnv2.AdvisoryEvent_Detection_Scanv1:
+		out.ScanV1 = &AdvisoryEventDetectionScanV1{
+			Scanner:           t.Scanv1.GetScanner(),
+			Subpackage:        t.Scanv1.GetSubpackage(),
+			Component:         t.Scanv1.GetComponent(),
+			ComponentID:       t.Scanv1.GetComponentId(),
+			ComponentVersion:  t.Scanv1.GetComponentVersion(),
+			ComponentType:     t.Scanv1.GetComponentType(),
+			ComponentLocation: t.Scanv1.GetComponentLocation(),
+		}
+	case *vulnv2.AdvisoryEvent_Detection_Nvdapi:
+		out.NVDAPI = &AdvisoryEventDetectionNVDAPI{
+			CPESearched: t.Nvdapi.GetCpeSearched(),
+			CPEFound:    t.Nvdapi.GetCpeFound(),
+		}
+	case *vulnv2.AdvisoryEvent_Detection_Manual_:
+		out.Manual = &AdvisoryEventDetectionManual{}
+	}
+	return out
 }
 
 func parseAdvisorySkip(token string) (int32, error) {
