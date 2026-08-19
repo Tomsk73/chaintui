@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +35,16 @@ func parsePURL(purl string) (name, version string) {
 	s, _, _ = strings.Cut(s, "?")
 	name, version, _ = strings.Cut(s, "@")
 	return
+}
+
+// unescapePURLPart decodes one percent-encoded PURL component, leaving it
+// unchanged if it is not valid encoding.
+func unescapePURLPart(s string) string {
+	decoded, err := url.PathUnescape(s)
+	if err != nil {
+		return s
+	}
+	return decoded
 }
 
 // uidpChildren scopes to direct children only — used for group hierarchy
@@ -67,8 +79,13 @@ func exactName(opts PageOpts) string {
 	return strings.TrimSpace(opts.Query)
 }
 
-// ListMyOrganizations returns one page of root-level groups (orgs) the current
-// user belongs to, using uidp.ancestorsOf scoped to the user's subject UIDP.
+// ListMyOrganizations returns one page of root-level groups (orgs) visible to
+// the caller.
+//
+// It filters on uidp.inRoot rather than ancestorsOf: the token's subject is an
+// OIDC subject (e.g. "google-oauth2|1234"), not a UIDP, so ancestorsOf matches
+// nothing. IAM already restricts the response to groups the caller can see,
+// which is how chainctl lists orgs.
 func (c *Client) ListMyOrganizations(opts PageOpts) (Page[Group], error) {
 	ctx := context.Background()
 	req := &iamv2.ListGroupsRequest{
@@ -76,11 +93,7 @@ func (c *Client) ListMyOrganizations(opts PageOpts) (Page[Group], error) {
 		PageToken: opts.PageToken,
 		OrderBy:   opts.OrderBy,
 		Name:      exactName(opts),
-	}
-	if sub := c.Subject(); sub != "" {
-		req.Uidp = &commonv1.UIDPFilter{AncestorsOf: sub}
-	} else {
-		req.Uidp = &commonv1.UIDPFilter{InRoot: true}
+		Uidp:      &commonv1.UIDPFilter{InRoot: true},
 	}
 	resp, err := c.v2.IAM().GroupsService().ListGroups(ctx, req)
 	if err != nil {
@@ -374,6 +387,64 @@ func (c *Client) ListRepos(groupUID string, opts PageOpts) (Page[Repo], error) {
 		NextPageToken: resp.GetNextPageToken(),
 		TotalCount:    resp.GetTotalCount(),
 	}, nil
+}
+
+// chartCatalogFolder reports whether an org child folder holds Helm charts.
+// AddChart places charts in a catalog folder named "charts"; the iamguarded
+// catalog uses "iamguarded-charts".
+func chartCatalogFolder(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == "charts" || strings.HasSuffix(n, "-charts")
+}
+
+// ListCharts returns the Helm charts in an org's chart catalog folders. The
+// registry API has no chart list RPC — charts are repos inside a catalog folder
+// — so this resolves the org's chart folders and lists the repos in each.
+// Results are merged and paged locally; chart counts are small (tens).
+// opts.Query filters by exact chart name.
+func (c *Client) ListCharts(orgUID string, opts PageOpts) (Page[Chart], error) {
+	if strings.TrimSpace(orgUID) == "" {
+		return Page[Chart]{}, fmt.Errorf("org is required")
+	}
+	ctx := context.Background()
+	folders, err := collectPages(ctx, func(token string) (Page[Group], error) {
+		return c.ListGroups(orgUID, PageOpts{PageSize: MaxPageSize, PageToken: token})
+	}, nil)
+	if err != nil {
+		return Page[Chart]{}, fmt.Errorf("list chart folders: %w", err)
+	}
+	name := exactName(opts)
+	var out []Chart
+	for _, f := range folders {
+		if !chartCatalogFolder(f.Name) {
+			continue
+		}
+		repos, err := collectPages(ctx, func(token string) (Page[Repo], error) {
+			return c.ListRepos(f.UID, PageOpts{PageSize: MaxPageSize, PageToken: token, Query: name})
+		}, nil)
+		if err != nil {
+			return Page[Chart]{}, fmt.Errorf("list charts in %s: %w", f.Name, err)
+		}
+		for _, r := range repos {
+			out = append(out, Chart{
+				UID:         r.UID,
+				Name:        r.Name,
+				Catalog:     f.Name,
+				Description: r.Description,
+				CreateTime:  r.CreateTime,
+				UpdateTime:  r.UpdateTime,
+			})
+		}
+	}
+	// Same chart in two catalogs sits together, so the CATALOG column reads as
+	// the difference between them.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Catalog < out[j].Catalog
+	})
+	return pageSlice(out, opts), nil
 }
 
 func (c *Client) ListTags(repoUID string, opts PageOpts) (Page[Tag], error) {

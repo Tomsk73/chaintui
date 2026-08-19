@@ -425,6 +425,110 @@ type LibraryArtifact struct {
 	UpdateTime    time.Time `json:"updateTime"`
 }
 
+// ---- Libraries policy types (org-scoped) ----
+
+// LibraryEntitlement is an org's grant to pull one library ecosystem.
+type LibraryEntitlement struct {
+	UID       string `json:"uid"`
+	Ecosystem string `json:"ecosystem"`
+	// Access is which sources the org may pull: "chainguard" (internal builds
+	// only) or "chainguard+upstream".
+	Access string `json:"access"`
+	Source string `json:"source,omitempty"` // trial | sfdc
+	// CooldownDays is the entitlement's cooldown; 0 means no cooldown enforced.
+	CooldownDays int32 `json:"cooldownDays"`
+}
+
+// LibraryPolicy is a Libraries gate configuration (cooldown, malware, licences,
+// block/allow lists) available to an org. Type is "system" (Chainguard-authored,
+// read-only) or "custom" (org-managed).
+type LibraryPolicy struct {
+	UID         string `json:"uid"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Type        string `json:"type"`
+	// CooldownDays is nil when the policy inherits the default (7 days); 0 means
+	// the cooldown gate is disabled.
+	CooldownDays    *int32              `json:"cooldownDays,omitempty"`
+	BlockList       []string            `json:"blockList,omitempty"`
+	AllowList       []LibraryAllowEntry `json:"allowList,omitempty"`
+	BlockedLicenses []string            `json:"blockedLicenses,omitempty"`
+	// Expression is the raw Rego of a system policy; empty for custom policies.
+	Expression string    `json:"expression,omitempty"`
+	CreateTime time.Time `json:"createTime"`
+	UpdateTime time.Time `json:"updateTime"`
+}
+
+// LibraryAllowEntry exempts a PURL from specific gates.
+type LibraryAllowEntry struct {
+	Purl           string `json:"purl"`
+	BypassCooldown bool   `json:"bypassCooldown,omitempty"`
+	BypassMalware  bool   `json:"bypassMalware,omitempty"`
+	Justification  string `json:"justification,omitempty"`
+}
+
+// LibraryPolicyBinding activates a policy for one (org, ecosystem) pair.
+type LibraryPolicyBinding struct {
+	UID       string `json:"uid"`
+	PolicyUID string `json:"policyUid"`
+	// PolicyName is resolved from the org's policy list; empty if the policy is
+	// not visible to the caller.
+	PolicyName string    `json:"policyName,omitempty"`
+	Ecosystem  string    `json:"ecosystem"`
+	Mode       string    `json:"mode"` // enforced | log
+	CreateTime time.Time `json:"createTime"`
+	UpdateTime time.Time `json:"updateTime"`
+}
+
+// LibraryBlockEvent records a package version that policy withheld from an org.
+type LibraryBlockEvent struct {
+	UID       string `json:"uid"`
+	Purl      string `json:"purl"`
+	Package   string `json:"package"`
+	Version   string `json:"version,omitempty"`
+	Ecosystem string `json:"ecosystem"`
+	Mode      string `json:"mode"`
+	Reason    string `json:"reason"` // cooldown | malware | policy
+	PolicyUID string `json:"policyUid,omitempty"`
+	// CooldownDays and UnblocksAt are set when Reason is cooldown.
+	CooldownDays   int32     `json:"cooldownDays,omitempty"`
+	PublishDate    time.Time `json:"publishDate,omitempty"`
+	UnblocksAt     time.Time `json:"unblocksAt,omitempty"`
+	FirstBlockedAt time.Time `json:"firstBlockedAt,omitempty"`
+	LastBlockedAt  time.Time `json:"lastBlockedAt,omitempty"`
+	AttemptCount   int32     `json:"attemptCount"`
+}
+
+// LibraryOrgPolicy is an org's whole Libraries posture: what it may pull, which
+// policies exist, and which are active.
+type LibraryOrgPolicy struct {
+	Entitlements []LibraryEntitlement   `json:"entitlements"`
+	Policies     []LibraryPolicy        `json:"policies"`
+	Bindings     []LibraryPolicyBinding `json:"bindings"`
+}
+
+// EcosystemStatus is the org's posture for a single ecosystem, as shown on the
+// libraries ecosystem picker.
+type EcosystemStatus struct {
+	Ecosystem   string                 `json:"ecosystem"`
+	Entitlement *LibraryEntitlement    `json:"entitlement,omitempty"` // nil = not entitled
+	Bindings    []LibraryPolicyBinding `json:"bindings,omitempty"`
+}
+
+// ---- Chart types ----
+
+// Chart is a Helm chart repo in one of an org's chart catalog folders.
+type Chart struct {
+	UID  string `json:"uid"`
+	Name string `json:"name"`
+	// Catalog is the chart folder the chart lives in (e.g. "charts",
+	// "iamguarded-charts").
+	Catalog     string    `json:"catalog"`
+	Description string    `json:"description,omitempty"`
+	CreateTime  time.Time `json:"createTime"`
+	UpdateTime  time.Time `json:"updateTime"`
+}
+
 type LibraryArtifactVersion struct {
 	UID              string    `json:"uid"`
 	Name             string    `json:"name"`

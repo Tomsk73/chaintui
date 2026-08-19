@@ -66,10 +66,11 @@ type App struct {
 
 func New(client *api.Client) App {
 	c := textinput.New()
-	c.Placeholder = "resource (groups, libraries, repos, adv)..."
+	c.Placeholder = "resource (repos, charts, libraries, libpolicy, adv)..."
 	c.CharLimit = 40
 
-	root := NewRootMenuPage(client)
+	// Everything is scoped to an org, so the org picker is the root page.
+	root := NewOrgSelectorPage(client)
 	return App{
 		client: client,
 		stack:  []Page{root},
@@ -77,7 +78,22 @@ func New(client *api.Client) App {
 	}
 }
 
+// orgListResource is the resource type of the org picker, which is the root page.
+const orgListResource = "organizations"
+
 func (a App) top() Page { return a.stack[len(a.stack)-1] }
+
+// pop removes the top page. Landing back on the org picker clears the active org
+// so the header and `:` commands do not carry a stale context.
+func (a *App) pop() {
+	if len(a.stack) <= 1 {
+		return
+	}
+	a.stack = append([]Page{}, a.stack[:len(a.stack)-1]...)
+	if a.top().ResourceType() == orgListResource {
+		a.orgCtx, a.orgName = "", ""
+	}
+}
 
 func (a App) contentH() int {
 	h := a.height - headerH - footerH
@@ -101,13 +117,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-		//	case SelectOrgMsg:
-		//		a.orgCtx = msg.UID
-		//		a.orgName = msg.Name
-		//		page := NewGroupsPage(a.client, msg.UID)
-		//		page.SetSize(a.width, a.contentH())
-		//		a.stack = []Page{page}
-		//		return a, page.Init()
+	case SelectOrgMsg:
+		// Picking an org sets the context every other page is scoped by, then
+		// opens that org's menu. The org list stays below it, so esc goes back.
+		a.orgCtx = msg.UID
+		a.orgName = msg.Name
+		page := NewOrgMenuPage(a.client, msg.UID, msg.Name)
+		page.SetSize(a.width, a.contentH())
+		a.stack = append(append([]Page{}, a.stack...), page)
+		return a, page.Init()
 
 	case PushMsg:
 		msg.P.SetSize(a.width, a.contentH())
@@ -115,18 +133,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, msg.P.Init()
 
 	case PopMsg:
-		if len(a.stack) > 1 {
-			a.stack = append([]Page{}, a.stack[:len(a.stack)-1]...)
-		}
+		a.pop()
 		return a, nil
 
 	case SwitchMsg:
-		page := resolveResourcePage(a.client, msg.Resource, msg.GroupCtx)
+		page := resolveResourcePage(a.client, msg.Resource, msg.GroupCtx, a.orgName)
 		if page == nil {
 			return a, nil
 		}
 		page.SetSize(a.width, a.contentH())
-		a.stack = []Page{page}
+		// Keep the org picker underneath so esc still walks back to it, unless
+		// the command switched to the picker itself.
+		if page.ResourceType() == orgListResource {
+			a.orgCtx, a.orgName = "", ""
+			a.stack = []Page{page}
+		} else {
+			a.stack = []Page{a.stack[0], page}
+		}
 		return a, page.Init()
 
 	case tea.KeyMsg:
@@ -140,23 +163,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(a.stack) == 1 {
 				return a, tea.Quit
 			}
-			a.stack = append([]Page{}, a.stack[:len(a.stack)-1]...)
+			a.pop()
 			return a, nil
 		case "esc":
-			if len(a.stack) > 1 {
-				a.stack = append([]Page{}, a.stack[:len(a.stack)-1]...)
-			}
+			a.pop()
 			return a, nil
 		case ":":
 			a.cmdMode = true
 			a.cmd.SetValue("")
 			a.cmd.Focus()
 			return a, textinput.Blink
-			//		case "o":
-			//			page := NewOrgSelectorPage(a.client)
-			//			page.SetSize(a.width, a.contentH())
-			//			a.stack = append(append([]Page{}, a.stack...), page)
-			//			return a, page.Init()
 		}
 	}
 
@@ -223,9 +239,10 @@ func (a App) groupPath() string {
 	if a.orgName != "" {
 		parts = append(parts, a.orgName)
 	}
+	// Only folders that have been drilled into ("group"), not folder lists, so
+	// the path reads org / folder / subfolder.
 	for _, p := range a.stack {
-		rt := p.ResourceType()
-		if (rt == "groups" || rt == "group") && p.Label() != "groups" {
+		if p.ResourceType() == "group" {
 			parts = append(parts, p.Label())
 		}
 	}
@@ -235,11 +252,13 @@ func (a App) groupPath() string {
 	return strings.Join(parts, " / ")
 }
 
-func resolveResourcePage(client *api.Client, resource, groupCtx string) Page {
+// resolveResourcePage maps a `:` command to a page, scoped to the active org
+// (groupCtx). orgName is used only for page labels.
+func resolveResourcePage(client *api.Client, resource, groupCtx, orgName string) Page {
 	switch strings.ToLower(strings.TrimSpace(resource)) {
-	case "home", "menu", "root":
-		return NewRootMenuPage(client)
-	case "g", "group", "groups":
+	case "home", "menu", "root", "org", "orgs", "organization", "organizations":
+		return NewOrgSelectorPage(client)
+	case "g", "group", "groups", "folder", "folders":
 		return NewGroupsPage(client, groupCtx)
 	case "id", "identity", "identities":
 		return NewIdentitiesPage(client, groupCtx)
@@ -253,12 +272,22 @@ func resolveResourcePage(client *api.Client, resource, groupCtx string) Page {
 		return NewGroupInvitesPage(client, groupCtx)
 	case "repo", "repos", "repository":
 		return NewReposPage(client, groupCtx)
-		//	case "tag", "tags":
-		//		return NewTagsPage(client, groupCtx)
+	case "chart", "charts", "helm":
+		return NewChartsPage(client, groupCtx)
 	case "adv", "advisory", "advisories":
 		return NewAdvisoriesPage(client, groupCtx)
 	case "lib", "libs", "library", "libraries", "artifact", "artifacts":
-		return NewLibrariesEcosystemPage(client)
+		return NewLibrariesEcosystemPage(client, groupCtx, orgName)
+	case "libpolicy", "librariespolicy", "libraries-policy", "policy":
+		return NewLibraryPolicyMenuPage(client, groupCtx, orgName)
+	case "ent", "ents", "entitlement", "entitlements":
+		return NewLibraryEntitlementsPage(client, groupCtx)
+	case "policies", "libpolicies":
+		return NewLibraryPoliciesPage(client, groupCtx)
+	case "binding", "bindings", "policybindings":
+		return NewLibraryPolicyBindingsPage(client, groupCtx)
+	case "blocked", "blocks", "blockevents", "blockedpackages":
+		return NewLibraryBlockEventsPage(client, groupCtx)
 	case "java", "libraries/java", "lib/java":
 		return NewLibraryArtifactsPage(client, string(api.LibraryEcosystemJava))
 	case "python", "libraries/python", "lib/python", "pypi":
@@ -301,12 +330,18 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 		keyHint("[", "prev page"),
 		keyHint("]", "next page"),
 	}
-	if resource == "groups" || resource == "group" || resource == "repos" || resource == "tags" ||
-		resource == "home" || resource == "libraries" || resource == "artifacts" {
+	switch resource {
+	case "groups", "group", "repos", "tags", "charts", "libraries", "artifacts",
+		"org", "librariespolicy":
 		hints = append(hints, keyHint("↵", "drill down"))
+	case orgListResource:
+		hints = append(hints, keyHint("↵", "select org"))
 	}
 	if resource == "artifacts" {
 		hints = append(hints, keyHint("m", "remediated"), keyHint("x", "export json"))
+	}
+	if resource == "blocked" {
+		hints = append(hints, keyHint("l", "log mode"))
 	}
 	if resource == "sbom" {
 		hints = append(hints, keyHint("s", "save csv"))

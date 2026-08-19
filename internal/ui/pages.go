@@ -40,6 +40,28 @@ func relativeTime(t time.Time) string {
 	}
 }
 
+// untilTime renders a future timestamp as a countdown ("in 6d"). Past times fall
+// back to relativeTime, which reads correctly for them.
+func untilTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	d := time.Until(t)
+	if d <= 0 {
+		return relativeTime(t)
+	}
+	switch {
+	case d < time.Minute:
+		return "in <1m"
+	case d < time.Hour:
+		return fmt.Sprintf("in %dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("in %dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("in %dd", int(d.Hours()/24))
+	}
+}
+
 func shortUID(uid string) string {
 	parts := strings.Split(uid, "/")
 	return parts[len(parts)-1]
@@ -135,16 +157,7 @@ func NewGroupsPage(client *api.Client, parentUID string) *ListPage {
 // --- Group resource selector ---
 
 func NewGroupResourcesPage(client *api.Client, groupUID, groupName string) *ListPage {
-	cols := []table.Column{
-		{Title: "RESOURCE", Width: 25},
-		{Title: "DESCRIPTION", Width: 50},
-	}
-
-	type entry struct {
-		name, desc string
-		make       func() Page
-	}
-	entries := []entry{
+	entries := []menuEntry{
 		{"groups", "Child groups", func() Page {
 			return NewGroupsPage(client, groupUID).WithLabel(groupName + " groups")
 		}},
@@ -170,26 +183,7 @@ func NewGroupResourcesPage(client *api.Client, groupUID, groupName string) *List
 			return NewAdvisoriesPage(client, groupUID).WithLabel(groupName + " advisories")
 		}},
 	}
-
-	load := func(string, int, string, string) (PageResult, error) {
-		rows := make([]RowData, len(entries))
-		for i, e := range entries {
-			rows[i] = RowData{
-				UID:     e.name,
-				Columns: []string{e.name, e.desc},
-				Raw:     e.make,
-			}
-		}
-		return PageResult{Rows: rows}, nil
-	}
-	enter := func(row RowData) tea.Cmd {
-		makePage, ok := row.Raw.(func() Page)
-		if !ok {
-			return nil
-		}
-		return pushPage(makePage())
-	}
-	return newListPage("group", groupUID, cols, load, enter).WithLabel(groupName)
+	return newMenuPage("group", groupUID, groupName, entries)
 }
 
 // --- Identities ---
@@ -504,25 +498,19 @@ func truncate(s string, max int) string {
 	return s[:max-3] + "..."
 }
 
-// --- Root menu ---
+// --- Org menu ---
 
-// NewRootMenuPage is the app home: top-level areas (groups, libraries).
-func NewRootMenuPage(client *api.Client) *ListPage {
+// menuEntry is one row of a static resource-picker page.
+type menuEntry struct {
+	name, desc string
+	make       func() Page
+}
+
+// newMenuPage builds a static picker page whose rows push another page on Enter.
+func newMenuPage(resource, groupCtx, label string, entries []menuEntry) *ListPage {
 	cols := []table.Column{
-		{Title: "RESOURCE", Width: 20},
+		{Title: "RESOURCE", Width: 22},
 		{Title: "DESCRIPTION", Width: 50},
-	}
-	type entry struct {
-		name, desc string
-		make       func() Page
-	}
-	entries := []entry{
-		{"groups", "Organizations and folders", func() Page {
-			return NewGroupsPage(client, "")
-		}},
-		{"libraries", "Chainguard Libraries artifacts", func() Page {
-			return NewLibrariesEcosystemPage(client)
-		}},
 	}
 	load := func(string, int, string, string) (PageResult, error) {
 		rows := make([]RowData, len(entries))
@@ -542,44 +530,174 @@ func NewRootMenuPage(client *api.Client) *ListPage {
 		}
 		return pushPage(makePage())
 	}
-	return newListPage("home", "", cols, load, enter).WithLabel("home")
+	return newListPage(resource, groupCtx, cols, load, enter).WithLabel(label)
+}
+
+// NewOrgMenuPage is what you land on after picking an org: everything the TUI
+// can show for that org. Its GroupContext is the org UIDP, so `:` commands
+// resolve inside the selected org.
+func NewOrgMenuPage(client *api.Client, orgUID, orgName string) *ListPage {
+	entries := []menuEntry{
+		{"repos", "Container image repositories", func() Page {
+			return NewReposPage(client, orgUID).WithLabel(orgName + " repos")
+		}},
+		{"charts", "Helm charts in the org's chart catalogs", func() Page {
+			return NewChartsPage(client, orgUID).WithLabel(orgName + " charts")
+		}},
+		{"libraries", "Chainguard Libraries by ecosystem", func() Page {
+			return NewLibrariesEcosystemPage(client, orgUID, orgName)
+		}},
+		{"librariespolicy", "Libraries entitlements, policies and blocks", func() Page {
+			return NewLibraryPolicyMenuPage(client, orgUID, orgName)
+		}},
+		{"advisories", "Security advisories", func() Page {
+			return NewAdvisoriesPage(client, orgUID).WithLabel(orgName + " advisories")
+		}},
+		{"groups", "Folders within the org", func() Page {
+			return NewGroupsPage(client, orgUID).WithLabel(orgName + " folders")
+		}},
+		{"identities", "Workload identities", func() Page {
+			return NewIdentitiesPage(client, orgUID).WithLabel(orgName + " identities")
+		}},
+		{"roles", "IAM roles", func() Page {
+			return NewRolesPage(client, orgUID).WithLabel(orgName + " roles")
+		}},
+		{"rolebindings", "Role bindings", func() Page {
+			return NewRoleBindingsPage(client, orgUID).WithLabel(orgName + " rolebindings")
+		}},
+		{"identityproviders", "Identity providers", func() Page {
+			return NewIDPsPage(client, orgUID).WithLabel(orgName + " idps")
+		}},
+		{"groupinvites", "Group invites", func() Page {
+			return NewGroupInvitesPage(client, orgUID).WithLabel(orgName + " invites")
+		}},
+	}
+	return newMenuPage("org", orgUID, orgName, entries)
+}
+
+// --- Charts ---
+
+// NewChartsPage lists the Helm charts in an org's chart catalog folders.
+// Enter drills into the chart's tags, as for an image repo.
+func NewChartsPage(client *api.Client, orgUID string) *ListPage {
+	cols := []table.Column{
+		{Title: "NAME", Width: 32},
+		{Title: "CATALOG", Width: 20},
+		{Title: "DESCRIPTION", Width: 30},
+		{Title: "UPDATED", Width: 14},
+	}
+	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
+		page, err := client.ListCharts(orgUID, pageOpts(token, pageSize, query, orderBy))
+		if err != nil {
+			return PageResult{}, err
+		}
+		return toPageResult(page, func(v api.Chart) RowData {
+			return RowData{
+				UID:     v.UID,
+				Columns: []string{v.Name, v.Catalog, truncate(v.Description, 60), relativeTime(v.UpdateTime)},
+				Raw:     v,
+			}
+		}), nil
+	}
+	enter := func(row RowData) tea.Cmd {
+		chart, ok := row.Raw.(api.Chart)
+		if !ok {
+			return nil
+		}
+		return pushPage(NewTagsPage(client, chart.UID).WithLabel(chart.Name + " tags"))
+	}
+	return newListPage("charts", orgUID, cols, load, enter).
+		WithLabel("charts").
+		WithServerNameFilter()
 }
 
 // --- Libraries ---
 
-// NewLibrariesEcosystemPage lets the user pick an ecosystem before listing artifacts.
-func NewLibrariesEcosystemPage(client *api.Client) *ListPage {
+// libraryEcosystems are the ecosystems the artifact browser can list, in
+// display order.
+var libraryEcosystems = []struct {
+	id, desc string
+}{
+	{string(api.LibraryEcosystemJava), "Maven / Java packages"},
+	{string(api.LibraryEcosystemPython), "PyPI / Python packages"},
+	{string(api.LibraryEcosystemJavaScript), "npm / JavaScript packages"},
+}
+
+// NewLibrariesEcosystemPage picks an ecosystem to browse and shows the org's
+// policy posture for each: whether it is entitled, which sources it may pull,
+// and which policy is active. Press d on a row for the full entitlement and
+// binding detail.
+//
+// The artifact catalogue itself is global, so browsing still works when no org
+// is selected — the policy columns are then blank.
+func NewLibrariesEcosystemPage(client *api.Client, orgUID, orgName string) *ListPage {
 	cols := []table.Column{
-		{Title: "ECOSYSTEM", Width: 16},
-		{Title: "DESCRIPTION", Width: 40},
-	}
-	type entry struct {
-		id, label, desc string
-	}
-	entries := []entry{
-		{string(api.LibraryEcosystemJava), "java", "Maven / Java packages"},
-		{string(api.LibraryEcosystemPython), "python", "PyPI / Python packages"},
-		{string(api.LibraryEcosystemJavaScript), "javascript", "npm / JavaScript packages"},
+		{Title: "ECOSYSTEM", Width: 14},
+		{Title: "ENTITLED", Width: 9},
+		{Title: "ACCESS", Width: 20},
+		{Title: "COOLDOWN", Width: 9},
+		{Title: "POLICY", Width: 22},
+		{Title: "MODE", Width: 10},
+		{Title: "DESCRIPTION", Width: 26},
 	}
 	load := func(string, int, string, string) (PageResult, error) {
-		rows := make([]RowData, len(entries))
-		for i, e := range entries {
+		ids := make([]string, len(libraryEcosystems))
+		for i, e := range libraryEcosystems {
+			ids[i] = e.id
+		}
+		var statuses []api.EcosystemStatus
+		if orgUID != "" {
+			policy, err := client.GetLibraryOrgPolicy(orgUID)
+			if err != nil {
+				return PageResult{}, err
+			}
+			statuses = policy.EcosystemStatuses(ids)
+		}
+		rows := make([]RowData, len(libraryEcosystems))
+		for i, e := range libraryEcosystems {
+			var st api.EcosystemStatus
+			if i < len(statuses) {
+				st = statuses[i]
+			} else {
+				st = api.EcosystemStatus{Ecosystem: e.id}
+			}
+			entitled, access, cooldown := "-", "-", "-"
+			if orgUID != "" {
+				entitled = "no"
+			}
+			if ent := st.Entitlement; ent != nil {
+				entitled = "yes"
+				access = ent.Access
+				cooldown = cooldownDays(ent.CooldownDays)
+			}
 			rows[i] = RowData{
-				UID:     e.id,
-				Columns: []string{e.label, e.desc},
-				Raw:     e.id,
+				UID: e.id,
+				Columns: []string{
+					e.id,
+					entitled,
+					access,
+					cooldown,
+					dash(bindingPolicyNames(st.Bindings)),
+					dash(bindingModes(st.Bindings)),
+					e.desc,
+				},
+				Raw: st,
 			}
 		}
 		return PageResult{Rows: rows}, nil
 	}
 	enter := func(row RowData) tea.Cmd {
-		eco, _ := row.Raw.(string)
+		eco := row.UID
 		if eco == "" {
-			eco = row.UID
+			return nil
 		}
 		return pushPage(NewLibraryArtifactsPage(client, eco).WithLabel(eco + " artifacts"))
 	}
-	return newListPage("libraries", "", cols, load, enter).WithLabel("libraries")
+	label := "libraries"
+	if orgName != "" {
+		label = orgName + " libraries"
+	}
+	return newListPage("libraries", orgUID, cols, load, enter).WithLabel(label)
 }
 
 // inventoryFilename names an inventory export after its timestamp and ecosystem,
