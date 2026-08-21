@@ -317,6 +317,18 @@ func resolveResourcePage(client *api.Client, resource, groupCtx, orgName string)
 		return NewLibrariesEcosystemPage(client, groupCtx, orgName)
 	case "libpolicy", "librariespolicy", "libraries-policy", "policy":
 		return NewLibraryPolicyMenuPage(client, groupCtx, orgName)
+	// Container policy keeps its own prefixes: the bare policy words above were
+	// already claimed by Libraries.
+	case "cpolicy", "containerpolicy", "imagepolicy", "repopolicy":
+		return NewImagePolicyMenuPage(client, groupCtx, orgName)
+	case "imagepolicies", "cpolicies":
+		return NewImagePoliciesPage(client, groupCtx)
+	case "cbindings", "imagebindings":
+		return NewImagePolicyBindingsPage(client, groupCtx)
+	case "decisions", "pulls":
+		return NewImagePolicyDecisionsPage(client, groupCtx, groupCtx, "")
+	case "overrides", "waivers":
+		return NewImagePolicyOverridesPage(client, groupCtx)
 	case "ent", "ents", "entitlement", "entitlements":
 		return NewLibraryEntitlementsPage(client, groupCtx)
 	case "policies", "libpolicies":
@@ -369,7 +381,7 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 	}
 	switch resource {
 	case "groups", "group", "repos", "repo", "tags", "charts", "libraries", "artifacts",
-		"org", "librariespolicy":
+		"org", "librariespolicy", "containerpolicy":
 		hints = append(hints, keyHint("↵", "drill down"))
 	case orgListResource:
 		hints = append(hints, keyHint("↵", "select org"))
@@ -379,6 +391,9 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 	}
 	if resource == "blocked" {
 		hints = append(hints, keyHint("l", "log mode"))
+	}
+	if resource == "policydecisions" {
+		hints = append(hints, keyHint("x", "denied only"))
 	}
 	if resource == "roles" {
 		hints = append(hints, keyHint("c", "custom only"))

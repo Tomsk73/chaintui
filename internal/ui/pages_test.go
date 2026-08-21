@@ -111,7 +111,7 @@ func TestRepoMenuEntries(t *testing.T) {
 	for _, r := range page.Rows {
 		names = append(names, r.Columns[0])
 	}
-	want := []string{"tags", "cves", "advisories"}
+	want := []string{"tags", "cves", "advisories", "policy"}
 	if fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Fatalf("options=%v, want %v", names, want)
 	}
@@ -125,6 +125,7 @@ func TestRepoMenuEntries(t *testing.T) {
 		{"tags", "tags", "nginx"},
 		{"cves", "cves", "nginx:latest cves"},
 		{"advisories", "advisories", "nginx:latest advisories"},
+		{"policy", "policydecisions", "nginx policy"},
 	} {
 		p := opened[tc.option]
 		if got := p.ResourceType(); got != tc.resource {

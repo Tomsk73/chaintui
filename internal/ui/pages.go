@@ -389,6 +389,9 @@ func NewRepoMenuPage(client *api.Client, groupUID, repoUID, repoName string) *Li
 		{"advisories", "Advisories for the packages in the latest image", func() Page {
 			return NewImageAdvisoriesPage(client, groupUID, repoUID, repoName, "latest")
 		}},
+		{"policy", "Policy decisions on pulls of this image", func() Page {
+			return NewImagePolicyDecisionsPage(client, groupUID, repoUID, repoName)
+		}},
 	}
 	// The menu's own context stays the org so `:` commands still scope to it.
 	return newMenuPage("repo", groupUID, repoName, entries)
@@ -683,6 +686,9 @@ func NewOrgMenuPage(client *api.Client, orgUID, orgName string) *ListPage {
 		}},
 		{"charts", "Helm charts in the org's chart catalogs", func() Page {
 			return NewChartsPage(client, orgUID).WithLabel(orgName + " charts")
+		}},
+		{"containerpolicy", "Image policies, bindings, decisions and overrides", func() Page {
+			return NewImagePolicyMenuPage(client, orgUID, orgName)
 		}},
 		{"libraries", "Chainguard Libraries by ecosystem", func() Page {
 			return NewLibrariesEcosystemPage(client, orgUID, orgName)

@@ -1,6 +1,9 @@
 package api
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // ---- Enum types ----
 
@@ -492,6 +495,86 @@ type LibraryArtifact struct {
 	SourceType    string    `json:"sourceType,omitempty"`
 	CreateTime    time.Time `json:"createTime"`
 	UpdateTime    time.Time `json:"updateTime"`
+}
+
+// ---- Image policy types ----
+
+// ImagePolicy is a rule container images are evaluated against at pull time.
+// Type is "system" (Chainguard-authored, read-only) or "custom" (org-managed).
+type ImagePolicy struct {
+	UID         string `json:"uid"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Type        string `json:"type"`
+	// ResourceType is the resource the policy evaluates, e.g.
+	// "registry.chainguard.dev/Repo@v1".
+	ResourceType string `json:"resourceType,omitempty"`
+	// Expression is the policy body.
+	Expression string `json:"expression,omitempty"`
+	// Parameters are the knobs a binding may set when it activates the policy.
+	Parameters []ImagePolicyParameter `json:"parameters,omitempty"`
+	CreateTime time.Time              `json:"createTime"`
+	UpdateTime time.Time              `json:"updateTime"`
+}
+
+// ImagePolicyParameter is one configurable knob declared by a policy.
+type ImagePolicyParameter struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+}
+
+// ImagePolicyBinding activates a policy over everything beneath its parent.
+type ImagePolicyBinding struct {
+	UID string `json:"uid"`
+	// PolicyUID is the bound policy; PolicyName is filled in by the caller from
+	// the policy list, since the API returns only the id.
+	PolicyUID  string `json:"policyUid"`
+	PolicyName string `json:"policyName,omitempty"`
+	// Mode is "enforced" (block on violation) or "dry-run" (log only).
+	Mode          string            `json:"mode"`
+	ResourceTypes []string          `json:"resourceTypes,omitempty"`
+	Parameters    map[string]string `json:"parameters,omitempty"`
+	CreateTime    time.Time         `json:"createTime"`
+	UpdateTime    time.Time         `json:"updateTime"`
+}
+
+// Scope is the UIDP the binding is attached to: it applies to that resource and
+// everything under it. The binding's own id is a child of that scope.
+func (b ImagePolicyBinding) Scope() string {
+	if i := strings.LastIndex(b.UID, "/"); i > 0 {
+		return b.UID[:i]
+	}
+	return b.UID
+}
+
+// ImagePolicyDecision is the outcome of evaluating one policy against one image
+// digest at pull time.
+type ImagePolicyDecision struct {
+	UID        string `json:"uid"`
+	RepoUID    string `json:"repoUid"`
+	Digest     string `json:"digest"`
+	PolicyUID  string `json:"policyUid"`
+	PolicyName string `json:"policyName,omitempty"`
+	Mode       string `json:"mode"`
+	// Result is "allowed", "denied" or "error".
+	Result string `json:"result"`
+	Reason string `json:"reason,omitempty"`
+	// PulledOn is the day the digest was pulled and evaluated.
+	PulledOn time.Time `json:"pulledOn"`
+}
+
+// ImagePolicyOverride is an admin's waiver of a policy decision for one digest.
+// It does not change the policy; it records a deliberate exception.
+type ImagePolicyOverride struct {
+	UID        string    `json:"uid"`
+	PolicyUID  string    `json:"policyUid"`
+	PolicyName string    `json:"policyName,omitempty"`
+	Digest     string    `json:"digest"`
+	Reason     string    `json:"reason,omitempty"`
+	CreatedBy  string    `json:"createdBy,omitempty"`
+	CreateTime time.Time `json:"createTime"`
 }
 
 // ---- Libraries policy types (org-scoped) ----
