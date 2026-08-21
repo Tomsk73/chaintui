@@ -99,15 +99,15 @@ func TestDescribeScanError(t *testing.T) {
 func TestReposAndTagsOfferCVEs(t *testing.T) {
 	t.Parallel()
 	repos := NewReposPage(nil, "org/1")
-	if repos.rowActionKey != "v" || repos.rowActionFn == nil {
-		t.Fatalf("repos page should bind v: key=%q", repos.rowActionKey)
+	if fn := repos.rowActionFor("v"); fn == nil {
+		t.Fatal("repos page should bind v")
 	}
 	tags := NewTagsPage(nil, "org/1/repo", "redis")
-	if tags.rowActionKey != "v" || tags.rowActionFn == nil {
-		t.Fatalf("tags page should bind v: key=%q", tags.rowActionKey)
+	if fn := tags.rowActionFor("v"); fn == nil {
+		t.Fatal("tags page should bind v")
 	}
 	// v on a repo row opens the CVE page for that repo's latest image.
-	cmd := repos.rowActionFn(RowData{UID: "org/1/repo", Raw: api.Repo{UID: "org/1/repo", Name: "redis"}})
+	cmd := repos.rowActionFor("v")(RowData{UID: "org/1/repo", Raw: api.Repo{UID: "org/1/repo", Name: "redis"}})
 	if cmd == nil {
 		t.Fatal("expected a command")
 	}
@@ -119,7 +119,7 @@ func TestReposAndTagsOfferCVEs(t *testing.T) {
 		t.Fatalf("pushed %q labelled %q", msg.P.ResourceType(), msg.P.Label())
 	}
 	// A row whose Raw is not a Repo is ignored rather than panicking.
-	if repos.rowActionFn(RowData{UID: "x"}) != nil {
+	if repos.rowActionFor("v")(RowData{UID: "x"}) != nil {
 		t.Error("unexpected command for a malformed row")
 	}
 }

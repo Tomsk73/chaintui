@@ -73,9 +73,9 @@ type ListPage struct {
 	boolToggleLabel string
 	boolToggle      *bool
 
-	// Optional secondary action on the selected row, alongside Enter.
-	rowActionKey string
-	rowActionFn  func(RowData) tea.Cmd
+	// Optional secondary actions on the selected row, alongside Enter, in
+	// binding order.
+	rowActions []rowAction
 
 	saveMode bool
 	saveIn   textinput.Model
@@ -162,7 +162,7 @@ func newListPage(
 }
 
 func (p *ListPage) ResourceType() string { return p.resource }
-func (p *ListPage) GroupContext() string  { return p.groupCtx }
+func (p *ListPage) GroupContext() string { return p.groupCtx }
 func (p *ListPage) Label() string {
 	if p.label != "" {
 		return p.label
@@ -290,12 +290,17 @@ func (p *ListPage) cancelExport() {
 	}
 }
 
-// WithRowAction binds a second key that acts on the selected row, for pages
-// where Enter already means something else (e.g. v for CVEs on repos, where
-// Enter drills into tags).
+// rowAction is a key bound to something done with the selected row.
+type rowAction struct {
+	key string
+	fn  func(RowData) tea.Cmd
+}
+
+// WithRowAction binds another key that acts on the selected row, for pages where
+// Enter already means something else (e.g. v for CVEs on repos, where Enter
+// drills into tags). It may be called more than once to bind several keys.
 func (p *ListPage) WithRowAction(key string, fn func(RowData) tea.Cmd) *ListPage {
-	p.rowActionKey = key
-	p.rowActionFn = fn
+	p.rowActions = append(p.rowActions, rowAction{key: key, fn: fn})
 	return p
 }
 
@@ -408,6 +413,18 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.err = msg.err
 		return p, nil
 
+	case deletedMsg:
+		if msg.err != nil {
+			p.saveMsg = errStyle.Render("delete failed: " + msg.err.Error())
+			return p, nil
+		}
+		p.saveMsg = dimStyle.Render("deleted " + msg.what)
+		// Reload the page being viewed so the row goes away, rather than jumping
+		// back to the first page.
+		p.loading = true
+		p.err = nil
+		return p, tea.Batch(p.spinner.Tick, p.doLoad(p.pageToken))
+
 	case exportEvent:
 		// An export whose page was popped mid-run still finishes and writes its
 		// file; its trailing events land on whatever page is now on top, so
@@ -516,9 +533,12 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		default:
-			if p.rowActionFn != nil && p.rowActionKey != "" && msg.String() == p.rowActionKey {
+			for _, action := range p.rowActions {
+				if action.key == "" || msg.String() != action.key {
+					continue
+				}
 				if row, ok := p.selectedRow(); ok {
-					return p, p.rowActionFn(row)
+					return p, action.fn(row)
 				}
 				return p, nil
 			}
@@ -823,10 +843,10 @@ func newDetailPage(resource string, row RowData) *detailPage {
 }
 
 func (d *detailPage) ResourceType() string { return d.resource }
-func (d *detailPage) GroupContext() string  { return "" }
-func (d *detailPage) Label() string         { return d.resource }
-func (d *detailPage) SetSize(w, h int)      { d.width = w; d.height = h }
-func (d *detailPage) Init() tea.Cmd         { return nil }
+func (d *detailPage) GroupContext() string { return "" }
+func (d *detailPage) Label() string        { return d.resource }
+func (d *detailPage) SetSize(w, h int)     { d.width = w; d.height = h }
+func (d *detailPage) Init() tea.Cmd        { return nil }
 
 func (d *detailPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(tea.KeyMsg); ok {
@@ -843,4 +863,14 @@ func (d *detailPage) View() string {
 		Foreground(white).
 		Padding(1, 2).
 		Render(d.content)
+}
+
+// rowActionFor returns the action bound to key, or nil when the page has none.
+func (p *ListPage) rowActionFor(key string) func(RowData) tea.Cmd {
+	for _, action := range p.rowActions {
+		if action.key == key {
+			return action.fn
+		}
+	}
+	return nil
 }

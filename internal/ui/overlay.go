@@ -43,16 +43,13 @@ func overlayCenter(bg, box string) string {
 	return strings.Join(out, "\n")
 }
 
-// quitDialog is the "are you sure" pop-up shown before the app exits.
-func quitDialog() string {
-	hint := func(key, desc string) string {
-		return dialogKeyStyle.Render("<"+key+">") + dialogDescStyle.Render(" "+desc)
-	}
-	lines := []string{
-		dialogTitleStyle.Render("Quit chaintui?"),
-		"",
-		hint("y", "quit") + dialogDescStyle.Render("    ") + hint("n", "cancel"),
-	}
+// dialogHint renders one "<key> what it does" pair inside a dialog.
+func dialogHint(key, desc string) string {
+	return dialogKeyStyle.Render("<"+key+">") + dialogDescStyle.Render(" "+desc)
+}
+
+// dialogBox frames pre-rendered lines as a centred modal panel.
+func dialogBox(lines []string) string {
 	width := 0
 	for _, l := range lines {
 		width = max(width, lipgloss.Width(l))
@@ -60,8 +57,33 @@ func quitDialog() string {
 	// Centre the lines here rather than with JoinVertical, which would pad them
 	// out with unstyled spaces and leave gaps in the panel.
 	row := lipgloss.NewStyle().Background(navy).Width(width).Align(lipgloss.Center)
+	out := make([]string, len(lines))
 	for i, l := range lines {
-		lines[i] = row.Render(l)
+		out[i] = row.Render(l)
 	}
-	return dialogStyle.Render(strings.Join(lines, "\n"))
+	return dialogStyle.Render(strings.Join(out, "\n"))
+}
+
+// quitDialog is the "are you sure" pop-up shown before the app exits.
+func quitDialog() string {
+	return dialogBox([]string{
+		dialogTitleStyle.Render("Quit chaintui?"),
+		"",
+		dialogHint("y", "quit") + dialogDescStyle.Render("    ") + dialogHint("n", "cancel"),
+	})
+}
+
+// confirmDialog is the pop-up a page raises before doing something destructive.
+// detail names the thing in question, and warning says what will happen to it.
+func confirmDialog(prompt, detail, warning string) string {
+	lines := []string{dialogTitleStyle.Render(prompt)}
+	if detail != "" {
+		lines = append(lines, dialogValueStyle.Render(detail))
+	}
+	if warning != "" {
+		lines = append(lines, dialogDescStyle.Render(warning))
+	}
+	lines = append(lines, "",
+		dialogHint("y", "yes")+dialogDescStyle.Render("    ")+dialogHint("n", "no"))
+	return dialogBox(lines)
 }

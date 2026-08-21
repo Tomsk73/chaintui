@@ -370,7 +370,8 @@ func NewReposPage(client *api.Client, groupUID string) *ListPage {
 	return newListPage("repos", groupUID, cols, load, enter).
 		WithServerNameFilter().
 		WithServerSort(map[int]string{0: "name", 2: "create_time"}).
-		WithRowAction("v", cves)
+		WithRowAction("v", cves).
+		WithRowAction("D", deleteRepoAction(client))
 }
 
 // --- Repo menu ---
@@ -444,6 +445,41 @@ func NewTagsPage(client *api.Client, repoUID, repoName string) *ListPage {
 		WithServerNameFilter().
 		WithServerSort(map[int]string{0: "name", 2: "update_time"}).
 		WithRowAction("v", cves)
+}
+
+// deletedMsg reports the outcome of a delete back to the page that asked for it.
+type deletedMsg struct {
+	what string
+	err  error
+}
+
+// deleteRepoAction asks for confirmation before removing a repository.
+// Same capability as `chainctl images repos delete` (CAP_REPO_DELETE).
+// D is bound rather than d so it is not a neighbour of describe.
+func deleteRepoAction(client *api.Client) func(RowData) tea.Cmd {
+	return func(row RowData) tea.Cmd {
+		repo, ok := row.Raw.(api.Repo)
+		if !ok {
+			return nil
+		}
+		name := repo.Name
+		if name == "" {
+			name = repo.UID
+		}
+		return func() tea.Msg {
+			return ConfirmMsg{
+				Prompt:  "Are you sure you want to delete this repository?",
+				Detail:  name,
+				Warning: "Deletes the repository and all of its tags.",
+				Action: func() tea.Msg {
+					if err := client.DeleteRepo(repo.UID); err != nil {
+						return deletedMsg{what: name, err: err}
+					}
+					return deletedMsg{what: name}
+				},
+			}
+		}
+	}
 }
 
 // --- SBOM ---

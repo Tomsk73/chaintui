@@ -52,6 +52,18 @@ type (
 	errMsg    struct{ err error }
 )
 
+// ConfirmMsg asks the App to put a yes/no pop-up up and only run Action if the
+// answer is yes. Pages raise this rather than acting straight away, so anything
+// destructive is confirmed the same way everywhere.
+type ConfirmMsg struct {
+	// Prompt is the question, Detail names the thing it is about, and Warning
+	// says what answering yes will do.
+	Prompt  string
+	Detail  string
+	Warning string
+	Action  tea.Cmd
+}
+
 // App is the root bubbletea model – owns the navigation stack.
 type App struct {
 	client  *api.Client
@@ -63,8 +75,11 @@ type App struct {
 	// quitting is set while the "are you sure" dialog is up; nothing has been
 	// torn down yet, so cancelling leaves the session exactly as it was.
 	quitting bool
-	orgCtx   string // active organisation UIDP
-	orgName  string // display name for the active organisation
+	// confirm holds a page's pending yes/no question. Its Action has not run and
+	// will not unless the answer is yes.
+	confirm *ConfirmMsg
+	orgCtx  string // active organisation UIDP
+	orgName string // display name for the active organisation
 }
 
 // inputCapture is implemented by pages that own the keyboard while one of their
@@ -167,7 +182,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, page.Init()
 
+	case ConfirmMsg:
+		confirm := msg
+		a.confirm = &confirm
+		return a, nil
+
 	case tea.KeyMsg:
+		if a.confirm != nil {
+			return a.handleConfirmKey(msg)
+		}
 		if a.quitting {
 			return a.handleQuitKey(msg)
 		}
@@ -202,6 +225,22 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	newStack[len(newStack)-1] = updated.(Page)
 	a.stack = newStack
 	return a, cmd
+}
+
+// handleConfirmKey answers a page's pending question. Only an explicit yes runs
+// the action; anything unrecognised is ignored rather than taken as an answer,
+// which matters when the action is destructive.
+func (a App) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y", "enter":
+		action := a.confirm.Action
+		a.confirm = nil
+		return a, action
+	case "n", "N", "esc", "ctrl+c":
+		a.confirm = nil
+		return a, nil
+	}
+	return a, nil
 }
 
 // handleQuitKey drives the quit confirmation. Only an explicit yes quits;
@@ -255,7 +294,10 @@ func (a App) View() string {
 		footer = renderFooter(a.width, top.ResourceType(), len(a.stack) > 1)
 	}
 	view := strings.Join([]string{header, content, footer}, "\n")
-	if a.quitting {
+	switch {
+	case a.confirm != nil:
+		return overlayCenter(view, confirmDialog(a.confirm.Prompt, a.confirm.Detail, a.confirm.Warning))
+	case a.quitting:
 		return overlayCenter(view, quitDialog())
 	}
 	return view
@@ -400,6 +442,9 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 	}
 	if resource == "repos" || resource == "tags" {
 		hints = append(hints, keyHint("v", "cves"))
+	}
+	if resource == "repos" {
+		hints = append(hints, keyHint("D", "delete repo"))
 	}
 	if resource == "cves" {
 		hints = append(hints, keyHint("f", "fixable only"), keyHint("s", "save csv"))

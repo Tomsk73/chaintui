@@ -64,6 +64,9 @@ var (
 	dialogTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(white).Background(navy)
 	dialogKeyStyle   = lipgloss.NewStyle().Bold(true).Foreground(cyan).Background(navy)
 	dialogDescStyle  = lipgloss.NewStyle().Foreground(gray).Background(navy)
+	// dialogValueStyle names the thing a dialog is about, e.g. the image being
+	// deleted. Yellow so it reads as the part to check before answering.
+	dialogValueStyle = lipgloss.NewStyle().Bold(true).Foreground(yellow).Background(navy)
 
 	borderColor = gray
 )

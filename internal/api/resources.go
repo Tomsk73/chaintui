@@ -500,6 +500,17 @@ func (c *Client) ListCharts(orgUID string, opts PageOpts) (Page[Chart], error) {
 	return pageSlice(out, opts), nil
 }
 
+// DeleteRepo removes an image repository and everything in it (all tags).
+// Same operation as `chainctl images repos delete`.
+func (c *Client) DeleteRepo(repoUID string) error {
+	if strings.TrimSpace(repoUID) == "" {
+		return fmt.Errorf("repo uid is required")
+	}
+	ctx := context.Background()
+	_, err := c.v2.Registry().ReposService().DeleteRepo(ctx, &registryv2.DeleteRepoRequest{Uid: repoUID})
+	return err
+}
+
 func (c *Client) ListTags(repoUID string, opts PageOpts) (Page[Tag], error) {
 	ctx := context.Background()
 	resp, err := c.v2.Registry().TagsService().ListTags(ctx, &registryv2.ListTagsRequest{
