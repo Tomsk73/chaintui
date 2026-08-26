@@ -1,3 +1,5 @@
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/{owner}/{repo}/badge)](https://scorecard.dev/viewer/?uri=github.com/{owner}/{repo})
+
 A TUI in the style of K9S for Chainguard
 
 To use, clone the repo and run make in the project root, then ./chaintui
