@@ -413,12 +413,12 @@ func (p *ListPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.err = msg.err
 		return p, nil
 
-	case deletedMsg:
+	case actionDoneMsg:
 		if msg.err != nil {
-			p.saveMsg = errStyle.Render("delete failed: " + msg.err.Error())
+			p.saveMsg = errStyle.Render(msg.failed() + ": " + msg.err.Error())
 			return p, nil
 		}
-		p.saveMsg = dimStyle.Render("deleted " + msg.what)
+		p.saveMsg = dimStyle.Render(msg.done + " " + msg.what)
 		// Reload the page being viewed so the row goes away, rather than jumping
 		// back to the first page.
 		p.loading = true

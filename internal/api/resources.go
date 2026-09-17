@@ -162,19 +162,63 @@ func (c *Client) ListIdentities(groupUID string, opts PageOpts) (Page[Identity],
 	}
 	out := make([]Identity, len(resp.GetIdentities()))
 	for i, v := range resp.GetIdentities() {
-		out[i] = Identity{
-			UID:         v.GetUid(),
-			Name:        v.GetName(),
-			Description: v.GetDescription(),
-			CreateTime:  tsTime(v.GetCreateTime()),
-			UpdateTime:  tsTime(v.GetUpdateTime()),
-		}
+		out[i] = mapIdentity(v)
 	}
 	return Page[Identity]{
 		Items:         out,
 		NextPageToken: resp.GetNextPageToken(),
 		TotalCount:    resp.GetTotalCount(),
 	}, nil
+}
+
+func mapIdentity(v *iamv2.Identity) Identity {
+	out := Identity{
+		UID:             v.GetUid(),
+		Name:            v.GetName(),
+		Description:     v.GetDescription(),
+		Company:         v.GetCompany(),
+		Email:           v.GetEmail(),
+		EmailUnverified: v.GetEmailUnverified(),
+		LastSeenTime:    tsTime(v.GetLastSeenTime()),
+		CreateTime:      tsTime(v.GetCreateTime()),
+		UpdateTime:      tsTime(v.GetUpdateTime()),
+	}
+	// The relationship oneof is how the identity authenticates, which is what
+	// distinguishes a person from a workload.
+	switch t := v.GetRelationship().(type) {
+	case *iamv2.Identity_ClaimMatch_:
+		cm := t.ClaimMatch
+		out.ClaimMatch = &IdentityClaimMatch{
+			Issuer:          cm.GetIssuer(),
+			IssuerPattern:   cm.GetIssuerPattern(),
+			Subject:         cm.GetSubject(),
+			SubjectPattern:  cm.GetSubjectPattern(),
+			Audience:        cm.GetAudience(),
+			AudiencePattern: cm.GetAudiencePattern(),
+			Claims:          cm.GetClaims(),
+			ClaimPatterns:   cm.GetClaimPatterns(),
+		}
+	case *iamv2.Identity_StaticKeys_:
+		sk := t.StaticKeys
+		out.StaticKeys = &IdentityStaticKeys{
+			Issuer:         sk.GetIssuer(),
+			Subject:        sk.GetSubject(),
+			IssuerKeys:     sk.GetIssuerKeys(),
+			ExpirationTime: tsTime(sk.GetExpirationTime()),
+		}
+	case *iamv2.Identity_AwsIdentity:
+		aws := t.AwsIdentity
+		out.AWSIdentity = &IdentityAWSIdentity{
+			AWSAccount:    aws.GetAwsAccount(),
+			ARN:           aws.GetArn(),
+			ARNPattern:    aws.GetArnPattern(),
+			UserID:        aws.GetUserId(),
+			UserIDPattern: aws.GetUserIdPattern(),
+		}
+	case *iamv2.Identity_ServicePrincipal:
+		out.ServicePrincipal = ServicePrincipal(t.ServicePrincipal.String())
+	}
+	return out
 }
 
 // capabilityName renders a capability enum in the form Chainguard documents and
@@ -264,11 +308,25 @@ func (c *Client) ListRoles(groupUID string, opts PageOpts, customOnly bool) (Pag
 }
 
 func (c *Client) ListRoleBindings(groupUID string, opts PageOpts) (Page[RoleBinding], error) {
+	return c.listRoleBindings(groupUID, "", opts)
+}
+
+// ListRoleBindingsForIdentity returns just one identity's bindings in scope —
+// what an identity's access to a group consists of, and what revoking it means.
+func (c *Client) ListRoleBindingsForIdentity(groupUID, identityUID string, opts PageOpts) (Page[RoleBinding], error) {
+	if strings.TrimSpace(identityUID) == "" {
+		return Page[RoleBinding]{}, fmt.Errorf("identity uid is required")
+	}
+	return c.listRoleBindings(groupUID, identityUID, opts)
+}
+
+func (c *Client) listRoleBindings(groupUID, identityUID string, opts PageOpts) (Page[RoleBinding], error) {
 	ctx := context.Background()
 	req := &iamv2.ListRoleBindingsRequest{
 		PageSize:  opts.size(),
 		PageToken: opts.PageToken,
 		OrderBy:   opts.OrderBy,
+		Identity:  identityUID,
 	}
 	req.Uidp = uidpScope(groupUID)
 	resp, err := c.v2.IAM().RoleBindingsService().ListRoleBindings(ctx, req)
@@ -277,18 +335,71 @@ func (c *Client) ListRoleBindings(groupUID string, opts PageOpts) (Page[RoleBind
 	}
 	out := make([]RoleBinding, len(resp.GetRoleBindings()))
 	for i, v := range resp.GetRoleBindings() {
-		out[i] = RoleBinding{
-			UID:         v.GetUid(),
-			IdentityUID: v.GetIdentityUid(),
-			RoleUID:     v.GetRoleUid(),
-			CreateTime:  tsTime(v.GetCreateTime()),
-		}
+		out[i] = mapRoleBinding(v)
 	}
 	return Page[RoleBinding]{
 		Items:         out,
 		NextPageToken: resp.GetNextPageToken(),
 		TotalCount:    resp.GetTotalCount(),
 	}, nil
+}
+
+// mapRoleBinding keeps the hydrated identity, role and group the response
+// carries. Without them a binding is three opaque UIDPs, which is no use as a
+// user list.
+func mapRoleBinding(v *iamv2.RoleBinding) RoleBinding {
+	out := RoleBinding{
+		UID:         v.GetUid(),
+		IdentityUID: v.GetIdentityUid(),
+		RoleUID:     v.GetRoleUid(),
+		CreateTime:  tsTime(v.GetCreateTime()),
+	}
+	if id := v.GetIdentity(); id != nil {
+		out.Identity = &RoleBindingIdentity{
+			UID:         id.GetUid(),
+			Name:        id.GetName(),
+			Description: id.GetDescription(),
+			Email:       id.GetEmail(),
+			Issuer:      id.GetIssuer(),
+			Subject:     id.GetSubject(),
+		}
+		// The hydrated sub-message is populated on reads; identity_uid is only
+		// set on writes, so fall back to it for the binding's identity.
+		if out.IdentityUID == "" {
+			out.IdentityUID = id.GetUid()
+		}
+	}
+	if role := v.GetRole(); role != nil {
+		out.Role = &RoleBindingRole{
+			UID:         role.GetUid(),
+			Name:        role.GetName(),
+			Description: role.GetDescription(),
+		}
+		if out.RoleUID == "" {
+			out.RoleUID = role.GetUid()
+		}
+	}
+	if g := v.GetGroup(); g != nil {
+		out.Group = &RoleBindingGroup{
+			UID:         g.GetUid(),
+			Name:        g.GetName(),
+			Description: g.GetDescription(),
+		}
+	}
+	return out
+}
+
+// DeleteRoleBinding revokes one grant of a role to an identity.
+//
+// This removes access, not the identity: the identity itself survives, so the
+// person or workload keeps its login and any access granted elsewhere.
+func (c *Client) DeleteRoleBinding(uid string) error {
+	if strings.TrimSpace(uid) == "" {
+		return fmt.Errorf("role binding uid is required")
+	}
+	ctx := context.Background()
+	_, err := c.v2.IAM().RoleBindingsService().DeleteRoleBinding(ctx, &iamv2.DeleteRoleBindingRequest{Uid: uid})
+	return err
 }
 
 func (c *Client) ListIdentityProviders(groupUID string, opts PageOpts) (Page[IdentityProvider], error) {

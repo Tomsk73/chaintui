@@ -36,6 +36,12 @@ var (
 	keyStyle  = lipgloss.NewStyle().Foreground(cyan).Bold(true)
 	descStyle = lipgloss.NewStyle().Foreground(gray)
 
+	// assumedStyle marks the header while the session is acting as an assumed
+	// identity, since that changes what every page can see and do.
+	assumedStyle = lipgloss.NewStyle().Bold(true).Foreground(yellow).Background(navy)
+	// noticeStyle is the App's own one-line result message.
+	noticeStyle = lipgloss.NewStyle().Foreground(green).Background(navy)
+
 	// Header and cell padding must match: the bubbles table sizes a cell as
 	// column width + the style's horizontal frame, so a header without the
 	// cells' padding leaves the two grids misaligned.

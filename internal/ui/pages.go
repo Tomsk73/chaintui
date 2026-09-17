@@ -190,12 +190,15 @@ func NewGroupResourcesPage(client *api.Client, groupUID, groupName string) *List
 
 // --- Identities ---
 
+// NewIdentitiesPage lists the identities in a group. `a` logs in as the selected
+// identity and `D` revokes whatever access it has in this group.
 func NewIdentitiesPage(client *api.Client, groupUID string) *ListPage {
 	cols := []table.Column{
-		{Title: "NAME", Width: 30},
-		{Title: "UID", Width: 20},
-		{Title: "DESCRIPTION", Width: 30},
-		{Title: "CREATED", Width: 14},
+		{Title: "NAME", Width: 24},
+		{Title: "EMAIL", Width: 28},
+		{Title: "TYPE", Width: 16},
+		{Title: "LAST SEEN", Width: 11},
+		{Title: "DESCRIPTION", Width: 28},
 	}
 	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
 		page, err := client.ListIdentities(groupUID, pageOpts(token, pageSize, query, orderBy))
@@ -204,15 +207,112 @@ func NewIdentitiesPage(client *api.Client, groupUID string) *ListPage {
 		}
 		return toPageResult(page, func(v api.Identity) RowData {
 			return RowData{
-				UID:     v.UID,
-				Columns: []string{v.Name, shortUID(v.UID), v.Description, relativeTime(v.CreateTime)},
-				Raw:     v,
+				UID: v.UID,
+				Columns: []string{
+					v.Name,
+					dash(identityEmail(v)),
+					dash(v.Relationship()),
+					relativeTime(v.LastSeenTime),
+					truncate(dash(v.Description), 90),
+				},
+				Raw: v,
 			}
 		}), nil
 	}
 	return newListPage("identities", groupUID, cols, load, nil).
 		WithServerNameFilter().
-		WithServerSort(map[int]string{0: "name", 1: "uid", 3: "create_time"})
+		WithServerSort(map[int]string{0: "name"}).
+		WithRowAction("a", assumeIdentityAction).
+		WithRowAction("D", revokeIdentityAccessAction(client, groupUID))
+}
+
+// identityEmail prefers the verified address, marking an unverified one so the
+// two are not mistaken for each other.
+func identityEmail(v api.Identity) string {
+	if v.Email != "" {
+		return v.Email
+	}
+	if v.EmailUnverified != "" {
+		return v.EmailUnverified + " (unverified)"
+	}
+	return ""
+}
+
+func assumeIdentityAction(row RowData) tea.Cmd {
+	identity, ok := row.Raw.(api.Identity)
+	if !ok {
+		return nil
+	}
+	name := identity.Name
+	if name == "" {
+		name = identityEmail(identity)
+	}
+	return assumeIdentityCmd(identity.UID, name)
+}
+
+// revokeIdentityAccessAction revokes an identity's access to a group. An
+// identity's access is however many role bindings it holds, so this looks them
+// up first and names them all in the confirmation — the count is the blast
+// radius, and it is not knowable from the row alone.
+func revokeIdentityAccessAction(client *api.Client, groupUID string) func(RowData) tea.Cmd {
+	return func(row RowData) tea.Cmd {
+		identity, ok := row.Raw.(api.Identity)
+		if !ok {
+			return nil
+		}
+		who := identity.Name
+		if who == "" {
+			who = identityEmail(identity)
+		}
+		return func() tea.Msg {
+			page, err := client.ListRoleBindingsForIdentity(groupUID, identity.UID,
+				api.PageOpts{PageSize: api.MaxPageSize})
+			if err != nil {
+				return actionDoneMsg{done: revokedAccess, what: who, err: err}
+			}
+			if len(page.Items) == 0 {
+				// Nothing to revoke is worth saying plainly rather than opening a
+				// dialog that would do nothing.
+				return actionDoneMsg{done: "no access to revoke for", what: who}
+			}
+			return ConfirmMsg{
+				Prompt:  "Are you sure you want to revoke this access?",
+				Detail:  who + "  —  " + describeBindings(page.Items),
+				Warning: "Removes the role bindings. The identity itself is kept.",
+				Action:  revokeBindings(client, who, page.Items),
+			}
+		}
+	}
+}
+
+// describeBindings summarises the bindings a revoke would remove, listing the
+// roles so the dialog says what access is actually going.
+func describeBindings(bindings []api.RoleBinding) string {
+	roles := make([]string, 0, len(bindings))
+	for _, b := range bindings {
+		roles = append(roles, b.RoleName())
+	}
+	noun := "bindings"
+	if len(bindings) == 1 {
+		noun = "binding"
+	}
+	return fmt.Sprintf("%d %s: %s", len(bindings), noun, strings.Join(roles, ", "))
+}
+
+// revokeBindings deletes every binding, reporting the first failure rather than
+// carrying on: a partial revoke is worth stopping on and re-reading.
+func revokeBindings(client *api.Client, who string, bindings []api.RoleBinding) tea.Cmd {
+	return func() tea.Msg {
+		for i, b := range bindings {
+			if err := client.DeleteRoleBinding(b.UID); err != nil {
+				if i > 0 {
+					err = fmt.Errorf("revoked %d of %d bindings, then: %w", i, len(bindings), err)
+				}
+				return actionDoneMsg{done: revokedAccess, what: who, err: err}
+			}
+		}
+		return actionDoneMsg{done: revokedAccess, what: who}
+	}
 }
 
 // --- Roles ---
@@ -447,10 +547,22 @@ func NewTagsPage(client *api.Client, repoUID, repoName string) *ListPage {
 		WithRowAction("v", cves)
 }
 
-// deletedMsg reports the outcome of a delete back to the page that asked for it.
-type deletedMsg struct {
+// actionDoneMsg reports the outcome of an action back to the page that asked for
+// it. done is the past tense of what happened ("deleted", "revoked access for")
+// so one message serves every page that changes something.
+type actionDoneMsg struct {
+	done string
 	what string
 	err  error
+}
+
+// failed describes a failure in the same voice as done, e.g. "delete failed".
+func (m actionDoneMsg) failed() string {
+	verb := strings.Fields(m.done)
+	if len(verb) == 0 {
+		return "action failed"
+	}
+	return strings.TrimSuffix(verb[0], "d") + " failed"
 }
 
 // deleteRepoAction asks for confirmation before removing a repository.
@@ -473,9 +585,9 @@ func deleteRepoAction(client *api.Client) func(RowData) tea.Cmd {
 				Warning: "Deletes the repository and all of its tags.",
 				Action: func() tea.Msg {
 					if err := client.DeleteRepo(repo.UID); err != nil {
-						return deletedMsg{what: name, err: err}
+						return actionDoneMsg{done: "deleted", what: name, err: err}
 					}
-					return deletedMsg{what: name}
+					return actionDoneMsg{done: "deleted", what: name}
 				},
 			}
 		}
@@ -737,6 +849,9 @@ func NewOrgMenuPage(client *api.Client, orgUID, orgName string) *ListPage {
 		}},
 		{"groups", "Folders within the org", func() Page {
 			return NewGroupsPage(client, orgUID).WithLabel(orgName + " folders")
+		}},
+		{"users", "Who has access to the org, and with what role", func() Page {
+			return NewUsersPage(client, orgUID, orgName)
 		}},
 		{"identities", "Workload identities", func() Page {
 			return NewIdentitiesPage(client, orgUID).WithLabel(orgName + " identities")

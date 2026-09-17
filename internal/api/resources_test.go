@@ -1,16 +1,21 @@
 package api
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	iamv2 "chainguard.dev/sdk/proto/chainguard/platform/iam/v2beta1"
 	librariesv2 "chainguard.dev/sdk/proto/chainguard/platform/libraries/v2beta1"
 	vulnv2 "chainguard.dev/sdk/proto/chainguard/platform/vulnerabilities/v2beta1"
 	librariesv1 "chainguard.dev/sdk/proto/platform/libraries/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestExactName(t *testing.T) {
@@ -441,5 +446,157 @@ func TestAdvisoryStatus(t *testing.T) {
 	}
 	if got := AdvisoryEventType("something_new").Label(); got != "" {
 		t.Errorf("unknown type should render blank, got %q", got)
+	}
+}
+
+// The list response hydrates the identity, role and group; dropping them is what
+// left the role bindings page showing three opaque UIDPs.
+func TestMapRoleBindingKeepsHydratedFields(t *testing.T) {
+	t.Parallel()
+	v := &iamv2.RoleBinding{
+		Uid: "org/1/rb-1",
+		Identity: &iamv2.RoleBindingIdentity{
+			Uid:    "org/1/id-1",
+			Name:   "tom",
+			Email:  "tom@example.com",
+			Issuer: "https://accounts.google.com",
+		},
+		Role:  &iamv2.RoleBindingRole{Uid: "role-owner", Name: "owner"},
+		Group: &iamv2.RoleBindingGroup{Uid: "org/1", Name: "acme"},
+	}
+	got := mapRoleBinding(v)
+
+	if got.Identity == nil || got.Identity.Email != "tom@example.com" {
+		t.Fatalf("identity=%+v", got.Identity)
+	}
+	if got.Role == nil || got.Role.Name != "owner" {
+		t.Fatalf("role=%+v", got.Role)
+	}
+	if got.Group == nil || got.Group.Name != "acme" {
+		t.Fatalf("group=%+v", got.Group)
+	}
+	// identity_uid/role_uid are only set on writes, so reads fall back to the
+	// hydrated sub-messages for them.
+	if got.IdentityUID != "org/1/id-1" || got.RoleUID != "role-owner" {
+		t.Fatalf("identityUID=%q roleUID=%q", got.IdentityUID, got.RoleUID)
+	}
+	if got.Holder() != "tom@example.com" || got.RoleName() != "owner" {
+		t.Fatalf("holder=%q role=%q", got.Holder(), got.RoleName())
+	}
+	if !got.Identity.IsHuman() {
+		t.Error("an identity with a verified email and issuer is a person")
+	}
+
+	// An unhydrated binding still names its holder, by UIDP.
+	bare := mapRoleBinding(&iamv2.RoleBinding{Uid: "org/1/rb-2", IdentityUid: "org/1/id-2", RoleUid: "role-viewer"})
+	if bare.Holder() != "org/1/id-2" || bare.RoleName() != "role-viewer" {
+		t.Fatalf("holder=%q role=%q", bare.Holder(), bare.RoleName())
+	}
+}
+
+func TestMapIdentityKeepsEmailAndRelationship(t *testing.T) {
+	t.Parallel()
+	seen := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
+	human := mapIdentity(&iamv2.Identity{
+		Uid:          "org/1/id-1",
+		Name:         "tom",
+		Email:        "tom@example.com",
+		LastSeenTime: timestamppb.New(seen),
+		Relationship: &iamv2.Identity_ClaimMatch_{ClaimMatch: &iamv2.Identity_ClaimMatch{
+			Iss: &iamv2.Identity_ClaimMatch_Issuer{Issuer: "https://accounts.google.com"},
+			Sub: &iamv2.Identity_ClaimMatch_Subject{Subject: "1234"},
+		}},
+	})
+	if human.Email != "tom@example.com" || !human.LastSeenTime.Equal(seen) {
+		t.Fatalf("email=%q lastSeen=%v", human.Email, human.LastSeenTime)
+	}
+	if human.ClaimMatch == nil || human.ClaimMatch.Issuer != "https://accounts.google.com" {
+		t.Fatalf("claimMatch=%+v", human.ClaimMatch)
+	}
+	if got := human.Relationship(); got != "claim match" {
+		t.Errorf("relationship=%q", got)
+	}
+
+	// The other relationship arms each land in their own field.
+	keys := mapIdentity(&iamv2.Identity{Relationship: &iamv2.Identity_StaticKeys_{
+		StaticKeys: &iamv2.Identity_StaticKeys{Issuer: "iss", Subject: "sub"},
+	}})
+	if keys.StaticKeys == nil || keys.Relationship() != "static keys" {
+		t.Errorf("staticKeys=%+v relationship=%q", keys.StaticKeys, keys.Relationship())
+	}
+	aws := mapIdentity(&iamv2.Identity{Relationship: &iamv2.Identity_AwsIdentity{
+		AwsIdentity: &iamv2.Identity_AWSIdentity{AwsAccount: "1234"},
+	}})
+	if aws.AWSIdentity == nil || aws.Relationship() != "aws" {
+		t.Errorf("aws=%+v relationship=%q", aws.AWSIdentity, aws.Relationship())
+	}
+	sp := mapIdentity(&iamv2.Identity{Relationship: &iamv2.Identity_ServicePrincipal{
+		ServicePrincipal: iamv2.ServicePrincipal_SERVICE_PRINCIPAL_INGESTER,
+	}})
+	if sp.ServicePrincipal != ServicePrincipalIngester || sp.Relationship() != "service principal" {
+		t.Errorf("sp=%q relationship=%q", sp.ServicePrincipal, sp.Relationship())
+	}
+	if got := mapIdentity(&iamv2.Identity{}).Relationship(); got != "" {
+		t.Errorf("relationship=%q, want empty", got)
+	}
+}
+
+func TestParseTokenSeparatesIdentityFromActor(t *testing.T) {
+	t.Parallel()
+	// sub is who the session acts as; act.sub is the human who assumed it.
+	assumed := fakeJWT(t, map[string]any{
+		"sub":   "org/1/support-identity",
+		"email": "tom@chainguard.dev",
+		"act":   map[string]any{"sub": "google-oauth2|1234"},
+	})
+	subject, identity, email := parseToken(assumed)
+	if identity != "org/1/support-identity" {
+		t.Errorf("identity=%q, want the token's own sub", identity)
+	}
+	if subject != "google-oauth2|1234" {
+		t.Errorf("subject=%q, want the actor", subject)
+	}
+	if email != "tom@chainguard.dev" {
+		t.Errorf("email=%q", email)
+	}
+
+	// Without an actor claim the two are the same and nothing is assumed.
+	plain := fakeJWT(t, map[string]any{"sub": "google-oauth2|1234", "email": "tom@chainguard.dev"})
+	subject, identity, _ = parseToken(plain)
+	if subject != identity || identity != "google-oauth2|1234" {
+		t.Errorf("subject=%q identity=%q", subject, identity)
+	}
+}
+
+// fakeJWT builds an unsigned token with the given claims. parseToken reads the
+// payload without verifying, which is all these tests need.
+func fakeJWT(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := base64.RawURLEncoding.EncodeToString
+	return enc([]byte(`{"alg":"none"}`)) + "." + enc(payload) + ".sig"
+}
+
+func TestLoginCommand(t *testing.T) {
+	t.Parallel()
+	cmd, err := LoginCommand("org/1/support")
+	if err != nil {
+		t.Skipf("chainctl not installed: %v", err)
+	}
+	if got := cmd.Args[len(cmd.Args)-1]; got != "--identity=org/1/support" {
+		t.Errorf("args=%v", cmd.Args)
+	}
+	// No identity means log in as yourself, which is how you stop assuming one.
+	plain, err := LoginCommand("  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, arg := range plain.Args {
+		if strings.HasPrefix(arg, "--identity") {
+			t.Errorf("unexpected identity flag: %v", plain.Args)
+		}
 	}
 }

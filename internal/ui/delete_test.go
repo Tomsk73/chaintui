@@ -149,7 +149,7 @@ func TestDeletedMsgRefreshesTheList(t *testing.T) {
 	})
 	p.pageToken = "page2"
 
-	m, cmd := p.Update(deletedMsg{what: "nginx"})
+	m, cmd := p.Update(actionDoneMsg{done: "deleted", what: "nginx"})
 	p = m.(*ListPage)
 	if !strings.Contains(p.saveMsg, "deleted nginx") {
 		t.Errorf("saveMsg=%q", p.saveMsg)
@@ -159,7 +159,7 @@ func TestDeletedMsgRefreshesTheList(t *testing.T) {
 	}
 
 	// A failure reports and leaves the list alone.
-	m, cmd = p.Update(deletedMsg{what: "nginx", err: errors.New("permission denied")})
+	m, cmd = p.Update(actionDoneMsg{done: "deleted", what: "nginx", err: errors.New("permission denied")})
 	p = m.(*ListPage)
 	if !strings.Contains(p.saveMsg, "permission denied") {
 		t.Errorf("saveMsg=%q", p.saveMsg)

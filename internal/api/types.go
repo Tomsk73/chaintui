@@ -150,6 +150,57 @@ type RoleBindingIdentity struct {
 	Subject     string `json:"subject,omitempty"`
 }
 
+// IsHuman reports whether the binding is held by a person rather than a
+// workload. Only identities federated from an IdP carry a verified email.
+func (i RoleBindingIdentity) IsHuman() bool {
+	return i.Email != "" && i.Issuer != ""
+}
+
+// Display names the holder of a binding: their email if it is a person,
+// otherwise the identity's name.
+func (i RoleBindingIdentity) Display() string {
+	if i.Email != "" {
+		return i.Email
+	}
+	return i.Name
+}
+
+// Holder names whoever holds this binding, falling back to the identity UIDP
+// when the API did not hydrate the identity.
+func (b RoleBinding) Holder() string {
+	if b.Identity != nil {
+		if d := b.Identity.Display(); d != "" {
+			return d
+		}
+	}
+	return b.IdentityUID
+}
+
+// RoleName is the bound role's name, falling back to its UIDP.
+func (b RoleBinding) RoleName() string {
+	if b.Role != nil && b.Role.Name != "" {
+		return b.Role.Name
+	}
+	return b.RoleUID
+}
+
+// Relationship describes how an identity authenticates, which is what separates
+// a person from a workload.
+func (i Identity) Relationship() string {
+	switch {
+	case i.ClaimMatch != nil:
+		return "claim match"
+	case i.StaticKeys != nil:
+		return "static keys"
+	case i.AWSIdentity != nil:
+		return "aws"
+	case i.ServicePrincipal != "" && i.ServicePrincipal != ServicePrincipalUnspecified:
+		return "service principal"
+	default:
+		return ""
+	}
+}
+
 type RoleBindingRole struct {
 	UID         string `json:"uid"`
 	Name        string `json:"name"`

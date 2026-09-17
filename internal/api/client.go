@@ -21,6 +21,9 @@ import (
 const (
 	apiBase   = "https://console-api.enforce.dev"
 	userAgent = "chaintui"
+	// tokenEnvVar pins the session's token, taking precedence over chainctl's
+	// cache. See TokenFromEnv.
+	tokenEnvVar = "CHAINGUARD_TOKEN"
 )
 
 type Client struct {
@@ -30,14 +33,29 @@ type Client struct {
 	libConn   *grpc.ClientConn // owns libraries connection
 	token     string
 	subject   string
+	identity  string
 	email     string
 }
 
-// Subject returns the authenticated identity's UIDP (from the JWT sub claim).
+// Subject returns the human behind the session: the JWT sub claim, or the actor
+// (act.sub) when the token was obtained by assuming an identity.
 func (c *Client) Subject() string { return c.subject }
+
+// Identity returns the identity the session is acting as — the token's own sub
+// claim. It differs from Subject only while an identity is being assumed.
+func (c *Client) Identity() string { return c.identity }
+
+// Assumed reports whether this session is acting as an assumed identity rather
+// than as the logged-in human directly.
+func (c *Client) Assumed() bool { return c.identity != "" && c.identity != c.subject }
 
 // Email returns the authenticated user's email if present in the token.
 func (c *Client) Email() string { return c.email }
+
+// TokenFromEnv reports whether the session's token came from CHAINGUARD_TOKEN
+// rather than chainctl's cache. Switching identity re-runs chainctl login, which
+// has no effect while the environment pins the token.
+func TokenFromEnv() bool { return os.Getenv(tokenEnvVar) != "" }
 
 // Close releases API connections. Safe to call multiple times.
 func (c *Client) Close() error {
@@ -71,15 +89,32 @@ func NewClient() (*Client, error) {
 	return newClient(token)
 }
 
+// LoginCommand builds the chainctl login command. An identityUID assumes that
+// identity; empty logs in as the caller themselves, which is also how you stop
+// assuming one.
+//
+// The command is interactive — it may open a browser — so a caller that has the
+// terminal must hand it back first (tea.ExecProcess does this).
+func LoginCommand(identityUID string) (*exec.Cmd, error) {
+	if _, err := exec.LookPath("chainctl"); err != nil {
+		return nil, fmt.Errorf("%w: chainctl not found in PATH (install the Chainguard CLI or set %s)", ErrNotLoggedIn, tokenEnvVar)
+	}
+	args := []string{"auth", "login"}
+	if id := strings.TrimSpace(identityUID); id != "" {
+		args = append(args, "--identity="+id)
+	}
+	return exec.Command("chainctl", args...), nil
+}
+
 // Login runs chainctl auth login interactively (inheriting the terminal),
 // then returns a ready Client using the freshly issued token.
 // Call this only before the TUI has taken over the terminal.
 func Login() (*Client, error) {
-	if _, err := exec.LookPath("chainctl"); err != nil {
-		return nil, fmt.Errorf("%w: chainctl not found in PATH (install the Chainguard CLI or set CHAINGUARD_TOKEN)", ErrNotLoggedIn)
+	cmd, err := LoginCommand("")
+	if err != nil {
+		return nil, err
 	}
 	fmt.Fprintln(os.Stderr, "Starting chainctl auth login...")
-	cmd := exec.Command("chainctl", "auth", "login")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -120,7 +155,7 @@ func newClient(token string) (*Client, error) {
 		return nil, fmt.Errorf("create libraries clients: %w", err)
 	}
 
-	sub, email := parseToken(token)
+	sub, id, email := parseToken(token)
 	return &Client{
 		v2:        v2,
 		platform:  p,
@@ -128,6 +163,7 @@ func newClient(token string) (*Client, error) {
 		libConn:   libConn,
 		token:     token,
 		subject:   sub,
+		identity:  id,
 		email:     email,
 	}, nil
 }
@@ -165,18 +201,21 @@ func cachedToken() (string, error) {
 	return t, nil
 }
 
-// parseToken extracts subject and email from a JWT without validating its signature.
-// Handles act.sub (impersonation) by preferring the actor subject when present.
-func parseToken(token string) (subject, email string) {
-	_, sub, err := cgauth.ExtractIssuerAndSubject(token)
-	if err == nil {
-		subject = sub
+// parseToken extracts the subject, the assumed identity and the email from a
+// JWT without validating its signature.
+//
+// identity is the token's own sub claim — who the session acts as. subject is
+// the human behind it, which is the same thing unless an identity is being
+// assumed, in which case act.sub names the actor who assumed it.
+func parseToken(token string) (subject, identity, email string) {
+	if _, sub, err := cgauth.ExtractIssuerAndSubject(token); err == nil {
+		identity, subject = sub, sub
 	}
-	em, _, err := cgauth.ExtractEmail(token)
-	if err == nil {
+	if em, _, err := cgauth.ExtractEmail(token); err == nil {
 		email = em
 	}
-	// act.sub is the human actor when the token was obtained via impersonation/delegation.
+	// act.sub is the human actor when the token was obtained by assuming an
+	// identity; the identity itself stays in sub.
 	if actor, err := cgauth.ExtractActor(token); err == nil && actor.Subject != "" {
 		subject = actor.Subject
 	}

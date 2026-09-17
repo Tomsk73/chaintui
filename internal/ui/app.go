@@ -52,6 +52,24 @@ type (
 	errMsg    struct{ err error }
 )
 
+// AssumeIdentityMsg asks the App to log the session in as another identity.
+// Pages raise it from a ConfirmMsg action, never directly.
+type AssumeIdentityMsg struct {
+	UID  string
+	Name string
+}
+
+// ReloginMsg asks the App to log in again as the caller themselves, which both
+// drops an assumed identity and renews an expired token.
+type ReloginMsg struct{}
+
+// identitySwitchedMsg carries the outcome of the chainctl login that ran while
+// the TUI was suspended.
+type identitySwitchedMsg struct {
+	name string
+	err  error
+}
+
 // ConfirmMsg asks the App to put a yes/no pop-up up and only run Action if the
 // answer is yes. Pages raise this rather than acting straight away, so anything
 // destructive is confirmed the same way everywhere.
@@ -78,8 +96,12 @@ type App struct {
 	// confirm holds a page's pending yes/no question. Its Action has not run and
 	// will not unless the answer is yes.
 	confirm *ConfirmMsg
-	orgCtx  string // active organisation UIDP
-	orgName string // display name for the active organisation
+	// notice reports the result of something the App did itself, rather than a
+	// page — switching identity, for instance. Cleared by the next keypress.
+	notice    string
+	noticeErr bool
+	orgCtx    string // active organisation UIDP
+	orgName   string // display name for the active organisation
 }
 
 // inputCapture is implemented by pages that own the keyboard while one of their
@@ -187,7 +209,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.confirm = &confirm
 		return a, nil
 
+	case AssumeIdentityMsg:
+		return a.login(msg.UID, msg.Name)
+
+	case ReloginMsg:
+		return a.login("", "")
+
+	case identitySwitchedMsg:
+		return a.finishLogin(msg)
+
 	case tea.KeyMsg:
+		// Any keypress acknowledges the last notice.
+		a.notice, a.noticeErr = "", false
 		if a.confirm != nil {
 			return a.handleConfirmKey(msg)
 		}
@@ -225,6 +258,66 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	newStack[len(newStack)-1] = updated.(Page)
 	a.stack = newStack
 	return a, cmd
+}
+
+// login hands the terminal to chainctl so it can run its interactive login,
+// assuming identityUID when one is given. tea.ExecProcess suspends the program
+// for the duration, which is the only way a browser-based login can work from
+// inside a full-screen TUI.
+func (a App) login(identityUID, name string) (tea.Model, tea.Cmd) {
+	// chainctl writes its result to the token cache, which CHAINGUARD_TOKEN
+	// overrides. Logging in would appear to succeed and change nothing.
+	if api.TokenFromEnv() {
+		a.notice = "CHAINGUARD_TOKEN is set, so it pins this session's identity — unset it to switch"
+		a.noticeErr = true
+		return a, nil
+	}
+	cmd, err := api.LoginCommand(identityUID)
+	if err != nil {
+		a.notice = err.Error()
+		a.noticeErr = true
+		return a, nil
+	}
+	return a, tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return identitySwitchedMsg{name: name, err: err}
+	})
+}
+
+// finishLogin rebuilds the session around whatever token chainctl just cached.
+//
+// The stack is reset to the org picker rather than kept: a different principal
+// may not see the same orgs, or the same resources within them, so carrying the
+// old pages over would show a view the new session cannot refresh.
+func (a App) finishLogin(msg identitySwitchedMsg) (tea.Model, tea.Cmd) {
+	who := msg.name
+	if who == "" {
+		who = "your own login"
+	}
+	if msg.err != nil {
+		a.notice = "login as " + who + " failed: " + msg.err.Error()
+		a.noticeErr = true
+		return a, nil
+	}
+	client, err := api.NewClient()
+	if err != nil {
+		a.notice = "no usable token after login: " + err.Error()
+		a.noticeErr = true
+		return a, nil
+	}
+	old := a.client
+	a.client = client
+	a.orgCtx, a.orgName = "", ""
+	a.notice = "now acting as " + who
+	a.noticeErr = false
+	root := NewOrgSelectorPage(client)
+	root.SetSize(a.width, a.contentH())
+	a.stack = []Page{root}
+	if old != nil {
+		// The old connections carried the previous credentials; anything still
+		// running on them is meant to stop.
+		_ = old.Close()
+	}
+	return a, root.Init()
 }
 
 // handleConfirmKey answers a page's pending question. Only an explicit yes runs
@@ -269,6 +362,11 @@ func (a App) handleCmdKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if val == "" {
 			return a, nil
 		}
+		// A couple of commands act on the session rather than navigating.
+		switch strings.ToLower(val) {
+		case "login", "relogin", "whoami":
+			return a, func() tea.Msg { return ReloginMsg{} }
+		}
 		ctx := a.top().GroupContext()
 		if ctx == "" {
 			ctx = a.orgCtx
@@ -285,12 +383,15 @@ func (a App) View() string {
 		return "Initializing..."
 	}
 	top := a.top()
-	header := renderHeader(a.width, top.ResourceType(), a.groupPath(), a.breadcrumb())
+	header := renderHeader(a.width, top.ResourceType(), a.groupPath(), a.breadcrumb(), a.whoami())
 	content := lipgloss.NewStyle().Height(a.contentH()).Render(top.View())
 	var footer string
-	if a.cmdMode {
+	switch {
+	case a.cmdMode:
 		footer = renderCmdBar(a.width, a.cmd.View())
-	} else {
+	case a.notice != "":
+		footer = renderNotice(a.width, a.notice, a.noticeErr)
+	default:
 		footer = renderFooter(a.width, top.ResourceType(), len(a.stack) > 1)
 	}
 	view := strings.Join([]string{header, content, footer}, "\n")
@@ -331,6 +432,23 @@ func (a App) groupPath() string {
 	return strings.Join(parts, " / ")
 }
 
+// whoami describes the session for the header. While an identity is assumed it
+// names both the identity being acted as and the human who assumed it, because
+// that difference decides what the session is allowed to do.
+func (a App) whoami() string {
+	if a.client == nil {
+		return ""
+	}
+	me := a.client.Email()
+	if me == "" {
+		me = shortUID(a.client.Subject())
+	}
+	if !a.client.Assumed() {
+		return me
+	}
+	return "as " + shortUID(a.client.Identity()) + " (" + me + ")"
+}
+
 // resolveResourcePage maps a `:` command to a page, scoped to the active org
 // (groupCtx). orgName is used only for page labels.
 func resolveResourcePage(client *api.Client, resource, groupCtx, orgName string) Page {
@@ -339,6 +457,8 @@ func resolveResourcePage(client *api.Client, resource, groupCtx, orgName string)
 		return NewOrgSelectorPage(client)
 	case "g", "group", "groups", "folder", "folders":
 		return NewGroupsPage(client, groupCtx)
+	case "u", "user", "users", "member", "members":
+		return NewUsersPage(client, groupCtx, orgName)
 	case "id", "identity", "identities":
 		return NewIdentitiesPage(client, groupCtx)
 	case "r", "role", "roles":
@@ -389,14 +509,24 @@ func resolveResourcePage(client *api.Client, resource, groupCtx, orgName string)
 	return nil
 }
 
-func renderHeader(width int, resource, groupPath, breadcrumb string) string {
-	left := lipgloss.JoinHorizontal(lipgloss.Left,
+func renderHeader(width int, resource, groupPath, breadcrumb, whoami string) string {
+	segments := []string{
 		appNameStyle.Render("chaintui"),
 		sepStyle.Render("  │  "),
 		ctxStyle.Render(groupPath),
 		sepStyle.Render("  │  "),
 		resTypeStyle.Render(resource),
-	)
+	}
+	if whoami != "" {
+		// An assumed identity changes what every page can see, so it is called
+		// out rather than dimmed away.
+		style := dimStyle
+		if strings.HasPrefix(whoami, "as ") {
+			style = assumedStyle
+		}
+		segments = append(segments, sepStyle.Render("  │  "), style.Render(whoami))
+	}
+	left := lipgloss.JoinHorizontal(lipgloss.Left, segments...)
 	right := dimStyle.Render(breadcrumb)
 
 	pad := width - lipgloss.Width(left) - lipgloss.Width(right)
@@ -446,6 +576,9 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 	if resource == "repos" {
 		hints = append(hints, keyHint("D", "delete repo"))
 	}
+	if resource == "users" || resource == "identities" {
+		hints = append(hints, keyHint("a", "assume"), keyHint("D", "revoke access"))
+	}
 	if resource == "cves" {
 		hints = append(hints, keyHint("f", "fixable only"), keyHint("s", "save csv"))
 	}
@@ -460,6 +593,17 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 	line := footerStyle.Width(width).Render(strings.Join(hints, dimStyle.Render("  ")))
 	sep := dimStyle.Render(strings.Repeat("─", width))
 	return sep + "\n" + line
+}
+
+// renderNotice replaces the footer hints with the result of something the App
+// did, until the next keypress.
+func renderNotice(width int, notice string, isErr bool) string {
+	style := noticeStyle
+	if isErr {
+		style = errStyle
+	}
+	sep := dimStyle.Render(strings.Repeat("─", width))
+	return sep + "\n" + footerStyle.Width(width).Render(style.Render(notice))
 }
 
 func renderCmdBar(width int, input string) string {
