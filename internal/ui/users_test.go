@@ -33,10 +33,13 @@ func TestUsersPageRows(t *testing.T) {
 	if p.rowActionFor("a") == nil || p.rowActionFor("D") == nil {
 		t.Fatal("users page should bind a and D")
 	}
-	// The page must not offer server sorts: which order_by fields this RPC
-	// accepts is unverified.
-	if len(p.serverSortFields) != 0 {
-		t.Errorf("serverSortFields=%v", p.serverSortFields)
+	// created_at is the only time field ListRoleBindings orders by, and the
+	// newest grant leads. Any other field would fail the load outright.
+	if got := p.serverSortFields; len(got) != 1 || got[3] != "created_at" {
+		t.Errorf("serverSortFields=%v", got)
+	}
+	if got := p.orderByArg(); got != "created_at desc" {
+		t.Errorf("default order=%q, want the newest grants first", got)
 	}
 
 	b := bindingRow().Raw.(api.RoleBinding)

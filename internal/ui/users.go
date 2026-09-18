@@ -51,10 +51,12 @@ func NewUsersPage(client *api.Client, orgUID, orgName string) *ListPage {
 	if orgName != "" {
 		label = orgName + " users"
 	}
-	// No server sort mappings: which order_by fields this RPC accepts is
-	// unverified, and guessing cost us InvalidArgument errors on advisories.
+	// ListRoleBindings orders by created_at or uid, and nothing else — most
+	// recently granted access first, which is the access worth reading.
 	return newListPage("users", orgUID, cols, load, nil).
 		WithLabel(label).
+		WithServerSort(map[int]string{3: "created_at"}).
+		WithDefaultOrder(newestCreatedAt).
 		WithRowAction("a", assumeBindingAction).
 		WithRowAction("D", revokeBindingAction(client))
 }

@@ -152,15 +152,14 @@ func TestDescribeImageError(t *testing.T) {
 	}
 }
 
-// The API accepts only uid and created_at as order_by, rejecting anything else
-// with InvalidArgument, and its own default of "uid asc" reads as random.
+// The advisories API accepts only uid, created_at and updated_at as order_by,
+// rejecting anything else with InvalidArgument, and its own default of "uid asc"
+// reads as random.
 func TestAdvisoryOrder(t *testing.T) {
 	t.Parallel()
-	if got := advisoryOrder(""); got != "created_at desc" {
+	p := NewAdvisoriesPage(nil, "org")
+	if got := p.orderByArg(); got != "created_at desc" {
 		t.Errorf("default order = %q, want the newest advisories first", got)
-	}
-	if got := advisoryOrder("uid asc"); got != "uid asc" {
-		t.Errorf("an explicit order should win, got %q", got)
 	}
 }
 
@@ -194,5 +193,61 @@ func TestAdvisoryRowShowsStatus(t *testing.T) {
 	// An advisory with no events to go on still renders a cell.
 	if got := advisoryRow(api.Advisory{AdvisoryID: "CGA-2"}).Columns[2]; got != "-" {
 		t.Fatalf("unknown status rendered as %q", got)
+	}
+}
+
+// Every list of records that carry a time loads newest first. The ordering is
+// the API's where its RPC has a time order_by field, and local where it has none
+// — the fields here are the ones the API was verified to accept, and one it does
+// not accept fails the load with InvalidArgument rather than being ignored.
+func TestListPagesDefaultToNewestFirst(t *testing.T) {
+	t.Parallel()
+	const org = "org/1"
+	tests := []struct {
+		name string
+		page *ListPage
+		// order is the API order_by expected on load, or "" when the page has to
+		// sort the rows itself.
+		order string
+		// localCol is the column sorted here, for pages with no server ordering.
+		localCol int
+	}{
+		{name: "organizations", page: NewOrgSelectorPage(nil), order: newestCreatedAt},
+		{name: "groups", page: NewGroupsPage(nil, org), order: newestCreatedAt},
+		{name: "identities", page: NewIdentitiesPage(nil, org), order: newestCreatedAt},
+		{name: "identityproviders", page: NewIDPsPage(nil, org), order: newestCreatedAt},
+		{name: "rolebindings", page: NewRoleBindingsPage(nil, org), order: newestCreatedAt},
+		{name: "users", page: NewUsersPage(nil, org, "acme"), order: newestCreatedAt},
+		{name: "groupinvites", page: NewGroupInvitesPage(nil, org), order: newestCreatedAt},
+		{name: "repos", page: NewReposPage(nil, org), order: newestCreated},
+		{name: "advisories", page: NewAdvisoriesPage(nil, org), order: newestCreatedAt},
+		{name: "policydecisions", page: NewImagePolicyDecisionsPage(nil, org, org, ""), order: newestPulled},
+		// No time order_by on these RPCs, so the rows in hand are sorted here.
+		{name: "tags", page: NewTagsPage(nil, "repo", "nginx"), localCol: 2},
+		{name: "charts", page: NewChartsPage(nil, org), localCol: 3},
+		{name: "versions", page: NewLibraryVersionsPage(nil, "art", "flask", false), localCol: 4},
+		{name: "policyoverrides", page: NewImagePolicyOverridesPage(nil, org), localCol: 3},
+		{name: "libraries-policies", page: NewLibraryPoliciesPage(nil, org), localCol: 6},
+		{name: "policybindings", page: NewLibraryPolicyBindingsPage(nil, org), localCol: 4},
+	}
+	for _, tc := range tests {
+		p := tc.page
+		if tc.order != "" {
+			if got := p.orderByArg(); got != tc.order {
+				t.Errorf("%s: order_by=%q, want %q", tc.name, got, tc.order)
+			}
+			if p.sortCol >= 0 {
+				t.Errorf("%s: a server-ordered list should not preset a local sort", tc.name)
+			}
+			continue
+		}
+		if p.sortCol != tc.localCol || p.sortAsc {
+			t.Errorf("%s: sortCol=%d asc=%v, want column %d descending",
+				tc.name, p.sortCol, p.sortAsc, tc.localCol)
+		}
+		if p.orderByArg() != "" {
+			t.Errorf("%s: sends order_by=%q, which its RPC does not accept",
+				tc.name, p.orderByArg())
+		}
 	}
 }

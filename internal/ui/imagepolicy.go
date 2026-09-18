@@ -67,8 +67,7 @@ func NewImagePoliciesPage(client *api.Client, orgUID string) *ListPage {
 		}), nil
 	}
 	return newListPage("imagepolicies", orgUID, cols, load, nil).
-		WithLabel("image policies").
-		WithServerNameFilter()
+		WithLabel("image policies")
 }
 
 // NewImagePolicyBindingsPage shows which policies are switched on, over what
@@ -148,7 +147,8 @@ func NewImagePolicyDecisionsPage(client *api.Client, orgUID, scopeUID, repoName 
 					decisionDay(v.PulledOn),
 					truncate(dash(v.Reason), 120),
 				},
-				Raw: v,
+				SortKeys: map[int]string{5: timeKey(v.PulledOn)},
+				Raw:      v,
 			}
 		})
 		res.Status = decisionSummary(page.Items, deniedOnly)
@@ -158,8 +158,12 @@ func NewImagePolicyDecisionsPage(client *api.Client, orgUID, scopeUID, repoName 
 	if repoName != "" {
 		label = repoName + " policy"
 	}
+	// pulled_on is the one order_by the decisions RPC accepts, so the most recent
+	// pulls lead.
 	return newListPage("policydecisions", scopeUID, cols, load, nil).
 		WithLabel(label).
+		WithServerSort(map[int]string{5: "pulled_on"}).
+		WithDefaultOrder(newestPulled).
 		WithBoolToggle("x", "denied only", &deniedOnly)
 }
 
@@ -190,12 +194,16 @@ func NewImagePolicyOverridesPage(client *api.Client, orgUID string) *ListPage {
 					relativeTime(v.CreateTime),
 					truncate(dash(v.Reason), 120),
 				},
-				Raw: v,
+				SortKeys: map[int]string{3: timeKey(v.CreateTime)},
+				Raw:      v,
 			}
 		}), nil
 	}
+	// The overrides RPC accepts no order_by field, so the newest waiver leads on
+	// the page in hand only.
 	return newListPage("policyoverrides", orgUID, cols, load, nil).
-		WithLabel("policy overrides")
+		WithLabel("policy overrides").
+		WithDefaultSort(3, false)
 }
 
 // nameCache resolves a lookup table once and reuses it for later pages. A failed

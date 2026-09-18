@@ -139,12 +139,16 @@ func NewLibraryPoliciesPage(client *api.Client, orgUID string) *ListPage {
 					fmt.Sprintf("%d", len(p.AllowList)),
 					relativeTime(p.UpdateTime),
 				},
-				Raw: p,
+				SortKeys: map[int]string{6: timeKey(p.UpdateTime)},
+				Raw:      p,
 			}
 		}
 		return PageResult{Rows: rows}, nil
 	}
-	return newListPage("libraries-policies", orgUID, cols, load, nil).WithLabel("policies")
+	// One call returns every policy, so ordering them here orders the whole list.
+	return newListPage("libraries-policies", orgUID, cols, load, nil).
+		WithLabel("policies").
+		WithDefaultSort(6, false)
 }
 
 // NewLibraryPolicyBindingsPage shows which policy is active for each ecosystem
@@ -173,17 +177,20 @@ func NewLibraryPolicyBindingsPage(client *api.Client, orgUID string) *ListPage {
 					shortUID(b.PolicyUID),
 					relativeTime(b.UpdateTime),
 				},
-				Raw: b,
+				SortKeys: map[int]string{4: timeKey(b.UpdateTime)},
+				Raw:      b,
 			}
 		}
 		return PageResult{Rows: rows}, nil
 	}
-	return newListPage("policybindings", orgUID, cols, load, nil).WithLabel("bindings")
+	return newListPage("policybindings", orgUID, cols, load, nil).
+		WithLabel("bindings").
+		WithDefaultSort(4, false)
 }
 
 // NewLibraryBlockEventsPage lists packages that policy withheld from the org.
 // The API returns enforced blocks from the last 30 days by default; `l` switches
-// to log-mode (shadow) violations and `/` filters by exact package name.
+// to log-mode (shadow) violations and `/` searches every page of them.
 func NewLibraryBlockEventsPage(client *api.Client, orgUID string) *ListPage {
 	cols := []table.Column{
 		{Title: "PACKAGE", Width: 30},
@@ -214,13 +221,16 @@ func NewLibraryBlockEventsPage(client *api.Client, orgUID string) *ListPage {
 					relativeTime(e.LastBlockedAt),
 					unblocks,
 				},
+				SortKeys: map[int]string{
+					5: timeKey(e.LastBlockedAt),
+					6: timeKey(e.UnblocksAt),
+				},
 				Raw: e,
 			}
 		}), nil
 	}
 	return newListPage("blocked", orgUID, cols, load, nil).
 		WithLabel("blocked packages").
-		WithServerNameFilter().
 		WithBoolToggle("l", "log mode", &logMode).
 		WithPageSize(25)
 }

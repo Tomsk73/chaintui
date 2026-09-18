@@ -73,6 +73,22 @@ func pushPage(p Page) tea.Cmd {
 	return func() tea.Msg { return PushMsg{P: p} }
 }
 
+// The order_by values that put the newest record first, which is how every list
+// that can be ordered by time is loaded. The field name differs per API, and one
+// the RPC does not accept fails the load with InvalidArgument, so each list uses
+// the name its own RPC takes. Verified against the API:
+//
+//	IAM v2beta1 lists    name, uid, created_at, updated_at
+//	registry repos       name, uid, create_time, update_time
+//	registry tags        name, uid — no time field, so tags sort locally
+//	policy decisions     pulled_on
+//	libraries artifacts  none at all
+const (
+	newestCreatedAt = "created_at desc"
+	newestCreated   = "create_time desc"
+	newestPulled    = "pulled_on desc"
+)
+
 func pageOpts(token string, pageSize int, query, orderBy string) api.PageOpts {
 	return api.PageOpts{
 		PageSize:  int32(pageSize),
@@ -122,8 +138,8 @@ func NewOrgSelectorPage(client *api.Client) *ListPage {
 		return func() tea.Msg { return SelectOrgMsg{UID: row.UID, Name: row.Columns[0]} }
 	}
 	return newListPage("organizations", "", cols, load, enter).
-		WithServerNameFilter().
-		WithServerSort(map[int]string{0: "name", 1: "uid", 3: "create_time"})
+		WithServerSort(map[int]string{0: "name", 1: "uid", 3: "created_at"}).
+		WithDefaultOrder(newestCreatedAt)
 }
 
 // --- Groups ---
@@ -152,8 +168,8 @@ func NewGroupsPage(client *api.Client, parentUID string) *ListPage {
 		return pushPage(NewGroupResourcesPage(client, row.UID, row.Columns[0]))
 	}
 	return newListPage("groups", parentUID, cols, load, enter).
-		WithServerNameFilter().
-		WithServerSort(map[int]string{0: "name", 1: "uid", 3: "create_time"})
+		WithServerSort(map[int]string{0: "name", 1: "uid", 3: "created_at"}).
+		WithDefaultOrder(newestCreatedAt)
 }
 
 // --- Group resource selector ---
@@ -215,13 +231,18 @@ func NewIdentitiesPage(client *api.Client, groupUID string) *ListPage {
 					relativeTime(v.LastSeenTime),
 					truncate(dash(v.Description), 90),
 				},
-				Raw: v,
+				// The RPC has no order_by for last seen, so sorting that column
+				// is local and needs the instant behind "3d ago".
+				SortKeys: map[int]string{3: timeKey(v.LastSeenTime)},
+				Raw:      v,
 			}
 		}), nil
 	}
+	// Newest identity first, though the list shows last seen rather than created:
+	// created_at is the only time field the RPC orders by.
 	return newListPage("identities", groupUID, cols, load, nil).
-		WithServerNameFilter().
 		WithServerSort(map[int]string{0: "name"}).
+		WithDefaultOrder(newestCreatedAt).
 		WithRowAction("a", assumeIdentityAction).
 		WithRowAction("D", revokeIdentityAccessAction(client, groupUID))
 }
@@ -351,7 +372,6 @@ func NewRolesPage(client *api.Client, groupUID string) *ListPage {
 	}
 	// Roles are merged from two scopes and paged locally, so sorting stays local too.
 	return newListPage("roles", groupUID, cols, load, nil).
-		WithServerNameFilter().
 		WithBoolToggle("c", "custom only", &customOnly)
 }
 
@@ -378,7 +398,8 @@ func NewRoleBindingsPage(client *api.Client, groupUID string) *ListPage {
 		}), nil
 	}
 	return newListPage("rolebindings", groupUID, cols, load, nil).
-		WithServerSort(map[int]string{0: "uid", 3: "create_time"})
+		WithServerSort(map[int]string{0: "uid", 3: "created_at"}).
+		WithDefaultOrder(newestCreatedAt)
 }
 
 // --- IdentityProviders ---
@@ -404,8 +425,8 @@ func NewIDPsPage(client *api.Client, groupUID string) *ListPage {
 		}), nil
 	}
 	return newListPage("identityproviders", groupUID, cols, load, nil).
-		WithServerNameFilter().
-		WithServerSort(map[int]string{0: "name", 1: "uid", 3: "create_time"})
+		WithServerSort(map[int]string{0: "name", 1: "uid", 3: "created_at"}).
+		WithDefaultOrder(newestCreatedAt)
 }
 
 // --- GroupInvites ---
@@ -424,14 +445,16 @@ func NewGroupInvitesPage(client *api.Client, groupUID string) *ListPage {
 		}
 		return toPageResult(page, func(v api.GroupInvite) RowData {
 			return RowData{
-				UID:     v.UID,
-				Columns: []string{v.Email, shortUID(v.RoleUID), relativeTime(v.ExpirationTime), relativeTime(v.CreateTime)},
-				Raw:     v,
+				UID:      v.UID,
+				Columns:  []string{v.Email, shortUID(v.RoleUID), relativeTime(v.ExpirationTime), relativeTime(v.CreateTime)},
+				SortKeys: map[int]string{2: timeKey(v.ExpirationTime)},
+				Raw:      v,
 			}
 		}), nil
 	}
 	return newListPage("groupinvites", groupUID, cols, load, nil).
-		WithServerSort(map[int]string{3: "created_at"})
+		WithServerSort(map[int]string{3: "created_at"}).
+		WithDefaultOrder(newestCreatedAt)
 }
 
 // --- Repos ---
@@ -468,8 +491,8 @@ func NewReposPage(client *api.Client, groupUID string) *ListPage {
 		return pushPage(NewImageCVEsPage(client, repo.UID, repo.Name, "latest", ""))
 	}
 	return newListPage("repos", groupUID, cols, load, enter).
-		WithServerNameFilter().
 		WithServerSort(map[int]string{0: "name", 2: "create_time"}).
+		WithDefaultOrder(newestCreated).
 		WithRowAction("v", cves).
 		WithRowAction("D", deleteRepoAction(client))
 }
@@ -519,9 +542,10 @@ func NewTagsPage(client *api.Client, repoUID, repoName string) *ListPage {
 				digest = digest[:7] + "..." + digest[len(digest)-9:]
 			}
 			return RowData{
-				UID:     v.UID,
-				Columns: []string{v.Name, digest, relativeTime(v.UpdateTime)},
-				Raw:     v,
+				UID:      v.UID,
+				Columns:  []string{v.Name, digest, relativeTime(v.UpdateTime)},
+				SortKeys: map[int]string{2: timeKey(v.UpdateTime)},
+				Raw:      v,
 			}
 		}), nil
 	}
@@ -540,10 +564,12 @@ func NewTagsPage(client *api.Client, repoUID, repoName string) *ListPage {
 		}
 		return pushPage(NewImageCVEsPage(client, repoUID, repoName, tag.Name, tag.Digest))
 	}
+	// ListTags orders by name or uid only — no time field — so newest first is a
+	// sort of the page in hand rather than of the whole repo.
 	return newListPage("tags", repoUID, cols, load, enter).
 		WithLabel(repoName).
-		WithServerNameFilter().
-		WithServerSort(map[int]string{0: "name", 2: "update_time"}).
+		WithServerSort(map[int]string{0: "name"}).
+		WithDefaultSort(2, false).
 		WithRowAction("v", cves)
 }
 
@@ -663,24 +689,11 @@ func advisoryRow(v api.Advisory) RowData {
 	}
 }
 
-// advisoryOrder defaults the feed to newest-first. The API's own default is
-// "uid asc", which reads as random, and no column maps to a server sort now that
-// the list shows status rather than the created date.
-//
-// created_at is one of only two order_by fields the API accepts (the other is
-// uid); it rejects everything else with InvalidArgument.
-func advisoryOrder(orderBy string) string {
-	if orderBy == "" {
-		return "created_at desc"
-	}
-	return orderBy
-}
-
 // NewAdvisoriesPage lists the Chainguard advisory catalogue. groupUID is the
 // page's navigation context only: advisories are global, not org-scoped.
 func NewAdvisoriesPage(client *api.Client, groupUID string) *ListPage {
 	load := func(token string, pageSize int, query, orderBy string) (PageResult, error) {
-		page, err := client.ListAdvisories(pageOpts(token, pageSize, query, advisoryOrder(orderBy)))
+		page, err := client.ListAdvisories(pageOpts(token, pageSize, query, orderBy))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -690,6 +703,7 @@ func NewAdvisoriesPage(client *api.Client, groupUID string) *ListPage {
 	}
 	return newListPage("advisories", groupUID, advisoryCols(), load, nil).
 		WithServerFilter().
+		WithDefaultOrder(newestCreatedAt).
 		WithPageSize(25)
 }
 
@@ -732,7 +746,7 @@ func NewImageAdvisoriesPage(client *api.Client, groupUID, repoUID, repoName, tag
 		page, err := client.ListAdvisoriesFiltered(api.AdvisoryFilter{
 			ComponentNames: img.Names,
 			Architecture:   img.Architecture,
-		}, pageOpts(token, pageSize, query, advisoryOrder(orderBy)))
+		}, pageOpts(token, pageSize, query, orderBy))
 		if err != nil {
 			return PageResult{}, err
 		}
@@ -744,6 +758,7 @@ func NewImageAdvisoriesPage(client *api.Client, groupUID, repoUID, repoName, tag
 	return newListPage("advisories", groupUID, advisoryCols(), load, nil).
 		WithLabel(imageRef(repoName, tag, "") + " advisories").
 		WithServerFilter().
+		WithDefaultOrder(newestCreatedAt).
 		WithPageSize(25)
 }
 
@@ -890,9 +905,10 @@ func NewChartsPage(client *api.Client, orgUID string) *ListPage {
 		}
 		return toPageResult(page, func(v api.Chart) RowData {
 			return RowData{
-				UID:     v.UID,
-				Columns: []string{v.Name, v.Catalog, truncate(v.Description, 60), relativeTime(v.UpdateTime)},
-				Raw:     v,
+				UID:      v.UID,
+				Columns:  []string{v.Name, v.Catalog, truncate(v.Description, 60), relativeTime(v.UpdateTime)},
+				SortKeys: map[int]string{3: timeKey(v.UpdateTime)},
+				Raw:      v,
 			}
 		}), nil
 	}
@@ -903,9 +919,11 @@ func NewChartsPage(client *api.Client, orgUID string) *ListPage {
 		}
 		return pushPage(NewTagsPage(client, chart.UID, chart.Name).WithLabel(chart.Name + " tags"))
 	}
+	// Charts are merged from the org's catalog folders and paged here, so the
+	// newest-first ordering is applied here too.
 	return newListPage("charts", orgUID, cols, load, enter).
 		WithLabel("charts").
-		WithServerNameFilter()
+		WithDefaultSort(3, false)
 }
 
 // --- Libraries ---
@@ -1058,6 +1076,10 @@ func NewLibraryArtifactsPage(client *api.Client, ecosystem string) *ListPage {
 					relativeTime(v.CreateTime),
 					relativeTime(v.UpdateTime),
 				},
+				SortKeys: map[int]string{
+					6: timeKey(v.CreateTime),
+					7: timeKey(v.UpdateTime),
+				},
 				Raw: v,
 			}
 		}), nil
@@ -1080,23 +1102,15 @@ func NewLibraryArtifactsPage(client *api.Client, ecosystem string) *ListPage {
 		}
 		return writeLibraryInventory(inv)
 	}
-	page := newListPage("artifacts", "", cols, load, enter).
-		WithLabel(ecosystem + " artifacts").
+	// No WithServerSort and no default order: ListArtifacts rejects every
+	// order_by field, name and the time fields alike, and the npm v1 list has no
+	// order_by at all. Sorting a column here orders the page on screen, which for
+	// a catalogue of this size is all it can honestly claim to do.
+	return newListPage("artifacts", "", cols, load, enter).
+		WithLabel(ecosystem+" artifacts").
 		WithServerFilter().
 		WithBoolToggle("m", "remediated", &remediated).
 		WithExport("x", "exporting "+ecosystem, export)
-	// Java/Python support server order_by; npm v1 list does not.
-	// License/source are npm-only today, so they are not in the sort map.
-	if ecosystem != string(api.LibraryEcosystemJavaScript) {
-		page = page.WithServerSort(map[int]string{
-			0: "name",
-			1: "latest_version",
-			2: "version_count",
-			6: "create_time",
-			7: "update_time",
-		})
-	}
-	return page
 }
 
 // NewLibraryVersionsPage lists versions for one Libraries artifact.
@@ -1124,10 +1138,14 @@ func NewLibraryVersionsPage(client *api.Client, artifactID, artifactName string,
 					formatBytes(v.SizeBytes),
 					relativeTime(v.UpdateTime),
 				},
-				Raw: v,
+				SortKeys: map[int]string{4: timeKey(v.UpdateTime)},
+				Raw:      v,
 			}
 		}), nil
 	}
+	// The versions RPC takes an order_by and ignores it, so newest first is
+	// ordered here. Version lists are short enough for that to be the whole list.
 	return newListPage("versions", "", cols, load, nil).
-		WithLabel(artifactName + " versions")
+		WithLabel(artifactName+" versions").
+		WithDefaultSort(4, false)
 }

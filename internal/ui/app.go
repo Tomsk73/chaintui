@@ -544,7 +544,7 @@ func renderHeader(width int, resource, groupPath, breadcrumb, whoami string) str
 func renderFooter(width int, resource string, canGoBack bool) string {
 	hints := []string{
 		keyHint(":", "cmd"),
-		keyHint("/", "filter"),
+		keyHint("/", "search"),
 		keyHint("o", "sort"),
 		keyHint("d", "describe"),
 		keyHint("r", "refresh"),

@@ -17,8 +17,9 @@ import (
 // defaults to "latest").
 //
 // `f` narrows the list to CVEs with a known fix, `s` saves it as CSV, `d` shows
-// the full record for a row, and `/` filters locally across all columns (so
-// "critical" or a package name both work).
+// the full record for a row, and `/` searches across all columns (so "critical"
+// or a package name both work). One scan report is the whole list, so a search
+// here costs no further requests.
 func NewImageCVEsPage(client *api.Client, repoUID, repoName, tag, digest string) *ListPage {
 	cols := []table.Column{
 		{Title: "CVE", Width: 20},
