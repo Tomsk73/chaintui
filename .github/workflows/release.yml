@@ -1,0 +1,48 @@
+name: Release
+
+# Pushing a v* tag builds chaintui for each supported platform and publishes a
+# GitHub release with the archives, checksums and auto-generated notes. CI only
+# runs on branches, so the tests are run here too before anything is published.
+on:
+  push:
+    tags: ["v*"]
+
+permissions: read-all
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os=${target%/*}
+            arch=${target#*/}
+            name="chaintui_${GITHUB_REF_NAME}_${os}_${arch}"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "dist/${name}/chaintui" ./cmd
+            tar -C "dist/${name}" -czf "dist/${name}.tar.gz" chaintui
+            rm -r "dist/${name:?}"
+          done
+          (cd dist && sha256sum chaintui_*.tar.gz > checksums.txt)
+          ls -l dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes
