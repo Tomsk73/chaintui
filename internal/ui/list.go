@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Tomsk73/chaintui/internal/api"
 )
@@ -558,24 +559,58 @@ func (p *ListPage) SetSize(w, h int) {
 	p.height = h
 	p.table.SetWidth(w)
 	p.table.SetHeight(h - 1) // leave a line for filter/error
-	// Grow the last column so the row grid is exactly w cells wide: any less and
-	// the selected row's highlight stops short of the window edge, any more and
-	// it wraps onto the next line. Each cell occupies its column width plus the
-	// cell style's padding.
+	// Size the columns so the row grid is exactly w cells wide: any less and the
+	// selected row's highlight stops short of the window edge, any more and every
+	// row wraps onto a second screen row, pushing the footer off the screen.
 	if len(p.cols) > 0 {
-		pad := tableCellStyle.GetHorizontalFrameSize()
-		used := 0
-		for _, c := range p.cols[:len(p.cols)-1] {
-			used += c.Width + pad
-		}
-		last := w - used - pad
-		if last > 10 {
-			cols := make([]table.Column, len(p.cols))
-			copy(cols, p.cols)
-			cols[len(cols)-1].Width = last
-			p.table.SetColumns(cols)
-		}
+		cols := make([]table.Column, len(p.cols))
+		copy(cols, p.cols)
+		fitColumns(cols, w, tableCellStyle.GetHorizontalFrameSize())
+		p.table.SetColumns(cols)
 	}
+}
+
+// fitColumns sizes columns so the row grid is exactly width cells, each cell
+// being its column width plus pad. The last column takes any spare width. When
+// the declared widths do not fit — the window is narrower than the grid — the
+// widest columns give width up first, down to a floor that keeps each legible.
+// The table truncates a cell's text to its column, so a narrowed column shows
+// less rather than wrapping.
+func fitColumns(cols []table.Column, width, pad int) {
+	const minCol = 4
+	used := 0
+	for _, c := range cols {
+		used += c.Width + pad
+	}
+	if used <= width {
+		cols[len(cols)-1].Width += width - used
+		return
+	}
+	for used > width {
+		widest := 0
+		for i, c := range cols {
+			if c.Width > cols[widest].Width {
+				widest = i
+			}
+		}
+		if cols[widest].Width <= minCol {
+			return // every column is at the floor; the view clips the rest
+		}
+		cols[widest].Width--
+		used--
+	}
+}
+
+// fitLine keeps a status or hint line to one screen row: anything past the
+// window's width is cut and marked with an ellipsis rather than left for the
+// terminal to wrap. A wrapped line makes the view taller than the screen, and
+// bubbletea then cannot repaint the rows it believes are off-screen — the
+// previous frame's footer shows through under the new one.
+func fitLine(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	return ansi.Truncate(s, width, "…")
 }
 
 // InputActive reports whether one of this page's own prompts is open, in which
@@ -1153,10 +1188,10 @@ func (p *ListPage) hasMorePages() bool {
 
 func (p *ListPage) View() string {
 	if p.searching {
-		return p.spinner.View() + " " + p.searchStatus()
+		return fitLine(p.spinner.View()+" "+p.searchStatus(), p.width)
 	}
 	if p.loading {
-		return p.spinner.View() + " Loading " + p.resource + "..."
+		return fitLine(p.spinner.View()+" Loading "+p.resource+"...", p.width)
 	}
 	if p.err != nil {
 		return errStyle.Render("Error: " + p.err.Error())
@@ -1222,7 +1257,7 @@ func (p *ListPage) View() string {
 	}
 
 	if bottom != "" {
-		return lipgloss.JoinVertical(lipgloss.Left, tableView, bottom)
+		return lipgloss.JoinVertical(lipgloss.Left, tableView, fitLine(bottom, p.width))
 	}
 	return tableView
 }

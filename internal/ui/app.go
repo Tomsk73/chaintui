@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Tomsk73/chaintui/internal/api"
 )
@@ -30,8 +31,11 @@ func logMsg(msg tea.Msg) {
 	}
 }
 
+// Rows the header and footer bands take; the page gets the rest. Each band is
+// pinned to exactly its rows by band, so a line that would wrap cannot push the
+// footer off the bottom of the screen.
 const (
-	headerH = 3
+	headerH = 2
 	footerH = 2
 )
 
@@ -384,7 +388,6 @@ func (a App) View() string {
 	}
 	top := a.top()
 	header := renderHeader(a.width, top.ResourceType(), a.groupPath(), a.breadcrumb(), a.whoami())
-	content := lipgloss.NewStyle().Height(a.contentH()).Render(top.View())
 	var footer string
 	switch {
 	case a.cmdMode:
@@ -394,7 +397,11 @@ func (a App) View() string {
 	default:
 		footer = renderFooter(a.width, top.ResourceType(), len(a.stack) > 1)
 	}
-	view := strings.Join([]string{header, content, footer}, "\n")
+	view := strings.Join([]string{
+		band(header, a.width, headerH),
+		band(top.View(), a.width, a.contentH()),
+		band(footer, a.width, footerH),
+	}, "\n")
 	switch {
 	case a.confirm != nil:
 		return overlayCenter(view, confirmDialog(a.confirm.Prompt, a.confirm.Detail, a.confirm.Warning))
@@ -402,6 +409,15 @@ func (a App) View() string {
 		return overlayCenter(view, quitDialog())
 	}
 	return view
+}
+
+// band pins one region of the screen to exactly h rows and at most width cells
+// per row. The view is the header, the page and the footer stacked to the
+// window's height, so a region that renders larger would push the footer past
+// the bottom of the screen — and bubbletea cannot repaint rows it believes are
+// off-screen, so the previous frame's footer stays visible under the new one.
+func band(s string, width, h int) string {
+	return lipgloss.NewStyle().Height(h).MaxHeight(h).MaxWidth(width).Render(s)
 }
 
 func (a App) breadcrumb() string {
@@ -529,20 +545,25 @@ func renderHeader(width int, resource, groupPath, breadcrumb, whoami string) str
 	left := lipgloss.JoinHorizontal(lipgloss.Left, segments...)
 	right := dimStyle.Render(breadcrumb)
 
+	// The breadcrumb gives way to the context on the left, and is cut from its
+	// start so the page you are on is the part that stays visible.
+	if over := lipgloss.Width(left) + 1 + lipgloss.Width(right) - width; over > 0 {
+		right = ansi.TruncateLeft(right, over+1, "…")
+	}
 	pad := width - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 1 {
 		pad = 1
 	}
 
 	line1 := headerStyle.Width(width).Render(
-		left + strings.Repeat(" ", pad) + right,
+		fitLine(left+strings.Repeat(" ", pad)+right, width),
 	)
 	line2 := dimStyle.Render(strings.Repeat("─", width))
 	return line1 + "\n" + line2
 }
 
 func renderFooter(width int, resource string, canGoBack bool) string {
-	hints := []string{
+	global := []string{
 		keyHint(":", "cmd"),
 		keyHint("/", "search"),
 		keyHint("o", "sort"),
@@ -551,6 +572,7 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 		keyHint("[", "prev page"),
 		keyHint("]", "next page"),
 	}
+	var hints []string
 	switch resource {
 	case "groups", "group", "repos", "repo", "tags", "charts", "libraries", "artifacts",
 		"org", "librariespolicy", "containerpolicy":
@@ -590,9 +612,33 @@ func renderFooter(width int, resource string, canGoBack bool) string {
 	}
 	hints = append(hints, keyHint("q", "quit"))
 
-	line := footerStyle.Width(width).Render(strings.Join(hints, dimStyle.Render("  ")))
+	line := footerStyle.Width(width).Render(fitHints(global, hints, width))
 	sep := dimStyle.Render(strings.Repeat("─", width))
 	return sep + "\n" + line
+}
+
+// fitHints lays the key hints out on one row. When they do not all fit, the
+// generic ones go first, from the right — every page has those, and they are
+// documented — so the page's own keys stay visible. If those still overflow,
+// page keys go from the left, keeping the way out: q quit is last and is never
+// dropped, and esc back goes only once it is the last thing before it. The cut
+// is a backstop for a window too narrow even for that.
+func fitHints(global, page []string, width int) string {
+	sep := dimStyle.Render("  ")
+	for {
+		all := append(append(make([]string, 0, len(global)+len(page)), global...), page...)
+		line := strings.Join(all, sep)
+		switch {
+		case lipgloss.Width(line) <= width:
+			return line
+		case len(global) > 0:
+			global = global[:len(global)-1]
+		case len(page) > 1:
+			page = page[1:]
+		default:
+			return fitLine(line, width)
+		}
+	}
 }
 
 // renderNotice replaces the footer hints with the result of something the App
@@ -603,7 +649,7 @@ func renderNotice(width int, notice string, isErr bool) string {
 		style = errStyle
 	}
 	sep := dimStyle.Render(strings.Repeat("─", width))
-	return sep + "\n" + footerStyle.Width(width).Render(style.Render(notice))
+	return sep + "\n" + footerStyle.Width(width).Render(fitLine(style.Render(notice), width))
 }
 
 func renderCmdBar(width int, input string) string {
@@ -613,7 +659,7 @@ func renderCmdBar(width int, input string) string {
 	if pad < 0 {
 		pad = 0
 	}
-	line := prompt + strings.Repeat(" ", pad) + hint
+	line := fitLine(prompt+strings.Repeat(" ", pad)+hint, width)
 	sep := dimStyle.Render(strings.Repeat("─", width))
 	return sep + "\n" + line
 }
